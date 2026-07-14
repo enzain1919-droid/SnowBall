@@ -26,6 +26,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -38,6 +39,7 @@ import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBars
@@ -71,10 +73,12 @@ import androidx.compose.material3.rememberDrawerState
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
@@ -92,6 +96,7 @@ import androidx.compose.ui.graphics.ColorFilter
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.PathEffect
 import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.text.font.FontWeight
@@ -101,6 +106,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.input.nestedscroll.NestedScrollConnection
@@ -112,7 +118,47 @@ import androidx.compose.ui.unit.Velocity
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.view.WindowCompat
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import com.dg479.longrunportfolio.formatting.CurrencyDisplayFormatter
+import com.dg479.longrunportfolio.protection.ProtectionDailyUsage
+import com.dg479.longrunportfolio.protection.ProtectionMode
+import com.dg479.longrunportfolio.protection.ProtectionSettings
+import com.dg479.longrunportfolio.protection.ProtectionStore
+import com.dg479.longrunportfolio.protection.hashQrContent
+import com.dg479.longrunportfolio.protection.matchesQr
+import com.dg479.longrunportfolio.simulation.DividendProjectionEngine
+import com.dg479.longrunportfolio.simulation.DividendProjectionInput
+import com.dg479.longrunportfolio.simulation.DividendProjectionRow as DividendGrowthProjectionRow
+import com.dg479.longrunportfolio.simulation.DividendTaxEngine
+import com.dg479.longrunportfolio.simulation.DividendTaxPerson
+import com.dg479.longrunportfolio.simulation.HistoricalAssetAllocation
+import com.dg479.longrunportfolio.simulation.HistoricalPricePoint
+import com.dg479.longrunportfolio.simulation.HistoricalVolatilityEngine
+import com.dg479.longrunportfolio.simulation.HistoricalVolatilityEstimate
+import com.dg479.longrunportfolio.simulation.SelfDividendAssetInput
+import com.dg479.longrunportfolio.simulation.SelfDividendEngine
+import com.dg479.longrunportfolio.simulation.SelfDividendProjectionRow
+import com.dg479.longrunportfolio.simulation.ScenarioComparisonEngine
+import com.dg479.longrunportfolio.simulation.ScenarioComparisonPoint
+import com.dg479.longrunportfolio.simulation.ScenarioComparisonSeries
+import com.dg479.longrunportfolio.simulation.ScenarioComparisonType
+import com.dg479.longrunportfolio.simulation.RetirementSuccessEngine
+import com.dg479.longrunportfolio.simulation.RetirementSuccessInput
+import com.dg479.longrunportfolio.simulation.RetirementSuccessResult
+import com.dg479.longrunportfolio.simulation.RetirementSuccessYear
+import com.dg479.longrunportfolio.simulation.RetirementScenarioSuccessAnalysis
+import com.dg479.longrunportfolio.simulation.RetirementScenarioSuccessEngine
+import com.dg479.longrunportfolio.simulation.ThreeAssetAllocation as FourAssetAllocation
+import com.dg479.longrunportfolio.simulation.ThreeAssetAnnualRow as FourAssetAnnualRow
+import com.dg479.longrunportfolio.simulation.ThreeAssetRetirementEngine
+import com.dg479.longrunportfolio.simulation.ThreeAssetRetirementInput as FourAssetRetirementInput
+import com.dg479.longrunportfolio.simulation.ThreeAssetRetirementResult as FourAssetRetirementResult
 import com.dg479.longrunportfolio.ui.theme.LongRunPortfolioTheme
+import com.google.zxing.BarcodeFormat
+import com.journeyapps.barcodescanner.BarcodeEncoder
+import com.journeyapps.barcodescanner.ScanContract
+import com.journeyapps.barcodescanner.ScanOptions
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -151,15 +197,18 @@ private val FourAssetSchdColor = Color(0xFF10B981)
 private val FourAssetJepqColor = Color(0xFF3B82F6)
 private val FourAssetQldColor = Color(0xFF8B5CF6)
 private val FourAssetCashColor = Color(0xFFF59E0B)
+private val SimulatorBacktestColor = Color(0xFF2563EB)
+private val SimulatorCashFlowColor = Color(0xFF07845F)
+private val SimulatorAnalysisColor = Color(0xFF7C3AED)
 private const val DefaultUsdKrw = 1535.29
+private var DisplayCurrency = "KRW"
+private var DisplayUsdKrw = DefaultUsdKrw
 private const val MarketRefreshIntervalMs = 5L * 60L * 1000L
 private const val ManualRefreshThrottleMs = 60L * 1000L
 private const val KisRequestDelayMs = 550L
 private const val KisBaseUrl = "https://openapi.koreainvestment.com:9443"
 private const val KiwoomRequestDelayMs = 150L
 private const val KiwoomBaseUrl = "https://mockapi.kiwoom.com"
-private const val OverseasStockAnnualBasicDeduction = 2_500_000.0
-private const val OverseasStockCapitalGainsTaxRate = 0.22
 private val KisOverseasExchangeOrder = listOf("NAS", "AMS", "NYS")
 private val KisOverseasExchangeHints = mapOf(
     "AAPL" to "NAS",
@@ -280,90 +329,10 @@ private data class SelfDividendAssetUi(
     val taxMode: String = "해외직투 양도세"
 )
 
-private data class SelfDividendProjectionRow(
-    val year: Int,
-    val monthlyTakeHome: Long,
-    val annualTakeHome: Long,
-    val assetBeforeWithdrawal: Long,
-    val grossSale: Long,
-    val realizedGain: Long,
-    val capitalGainsTax: Long,
-    val totalAsset: Long,
-    val remainingCostBasis: Long,
-    val note: String
-)
-
-private data class SelfDividendLotState(
-    val taxable: Boolean,
-    val expectedAnnualReturn: Double,
-    val baseAnnualWithdrawal: Double,
-    val withdrawalGrowthRate: Double,
-    var assetValue: Double,
-    var remainingCostBasis: Double
-)
-
-private data class SelfDividendSaleEstimate(
-    val grossSale: Double,
-    val netProceeds: Double,
-    val realizedGain: Double,
-    val capitalGainsTax: Double
-)
-
 private data class SelfDividendPreset(
     val name: String,
     val assets: List<SelfDividendAssetUi>,
     val result: List<SelfDividendProjectionRow> = emptyList()
-)
-
-private data class FourAssetAllocation(
-    val schd: Double,
-    val jepq: Double,
-    val qld: Double,
-    val cash: Double
-)
-
-private data class FourAssetRetirementInput(
-    val totalCapitalWon: Long,
-    val monthlyExpenseWon: Long,
-    val allocation: FourAssetAllocation,
-    val exchangeRate: Double,
-    val schdPrice: Double,
-    val jepqPrice: Double,
-    val qldPrice: Double,
-    val schdYield: Double,
-    val schdDividendGrowth: Double,
-    val schdPriceGrowth: Double,
-    val jepqYield: Double,
-    val jepqDividendGrowth: Double,
-    val jepqPriceGrowth: Double,
-    val qldPriceGrowth: Double,
-    val cashYield: Double,
-    val inflationRate: Double,
-    val taxAndInsuranceRate: Double,
-    val stressTestEnabled: Boolean
-)
-
-private data class FourAssetAnnualRow(
-    val year: Int,
-    val schdAssetWon: Long,
-    val jepqAssetWon: Long,
-    val qldAssetWon: Long,
-    val cashWon: Long,
-    val netAnnualDividendWon: Long,
-    val annualExpenseWon: Long,
-    val action: String,
-    val totalAssetWon: Long
-)
-
-private data class FourAssetRetirementResult(
-    val initialSchdShares: Double,
-    val initialJepqShares: Double,
-    val initialQldShares: Double,
-    val cashDepletedYear: Int?,
-    val finalAssetWon: Long,
-    val inflationTargetWon: Long,
-    val realGrowthPercent: Double,
-    val rows: List<FourAssetAnnualRow>
 )
 
 private data class FourAssetDistributionPreset(
@@ -447,7 +416,8 @@ private data class DividendSimulationPreset(
     val targetInput: String,
     val showAfterTax: Boolean,
     val selectedPersonId: Long,
-    val people: List<DividendPersonUi>
+    val people: List<DividendPersonUi>,
+    val projectionRows: List<DividendGrowthProjectionRow> = emptyList()
 )
 
 private data class DividendMetricUi(
@@ -456,10 +426,45 @@ private data class DividendMetricUi(
     val numericValue: Double? = null
 )
 
-private data class DividendGrowthProjectionRow(
-    val year: Int,
-    val monthlyDividend: Long,
-    val totalAsset: Long
+private data class DividendChartUpdateSnapshot(
+    val inputKey: String,
+    val ticker: String,
+    val targetMonthlyDividend: Long,
+    val dividendGrowthMetric: DividendMetricUi,
+    val priceGrowthMetric: DividendMetricUi,
+    val pricePoints: List<Pair<LocalDate, Double>>,
+    val growthPoints: List<Pair<LocalDate, Double>>,
+    val projectionRows: List<DividendGrowthProjectionRow>
+)
+
+private data class ScenarioComparisonCandidate(
+    val id: String,
+    val name: String,
+    val type: ScenarioComparisonType,
+    val series: ScenarioComparisonSeries?,
+    val historicalAllocations: List<HistoricalAssetAllocation>
+)
+
+private data class RetirementVolatilityFailure(
+    val scenarioId: String,
+    val scenarioName: String,
+    val tickers: List<String>
+)
+
+private class QrScanCoordinator {
+    var externalFlowActive: Boolean = false
+    var resultHandler: ((String?) -> Unit)? = null
+}
+
+private data class RetirementSuccessSnapshot(
+    val initialAssetEok: String = "10",
+    val monthlySpendingMan: String = "400",
+    val expectedReturn: String = "7",
+    val volatility: String = "15",
+    val inflation: String = "2.5",
+    val years: String = "30",
+    val simulations: Int = 5_000,
+    val result: RetirementSuccessResult? = null
 )
 
 private data class BacktestAllocationPoint(
@@ -540,6 +545,10 @@ private object HistoryInterval {
     const val MONTHLY = "M"
 }
 
+private const val VolatilityHistoryPreferences = "long_run_volatility_history"
+private const val VolatilityHistoryMetaPreferences = "long_run_volatility_history_meta"
+private const val VolatilityHistoryCacheMs = 7L * 24L * 60L * 60L * 1_000L
+
 private enum class DownloadStatus {
     SUCCESS,
     API_KEY_MISSING,
@@ -566,6 +575,7 @@ private var lastBacktestPresetCache: BacktestPreset? = null
 private var lastBacktestResultCache: BacktestResultUi? = null
 private val savedBacktestPresetsCache = mutableListOf<BacktestPreset>()
 private var lastDividendSimulationPresetCache: DividendSimulationPreset? = null
+private var lastDividendChartUpdateSnapshotCache: DividendChartUpdateSnapshot? = null
 private val savedDividendSimulationPresetsCache = mutableListOf<DividendSimulationPreset>()
 private var lastSelfDividendPresetCache: SelfDividendPreset? = null
 private val savedSelfDividendPresetsCache = mutableListOf<SelfDividendPreset>()
@@ -681,6 +691,47 @@ private fun LongRunApp() {
     val context = LocalContext.current
     val savedState = remember { loadAppState(context) }
     var appSettings by remember { mutableStateOf(loadAppSettings(context)) }
+    var protectionSettings by remember { mutableStateOf(ProtectionStore.loadSettingsForAppLaunch(context)) }
+    var dailyProtectionUsage by remember { mutableStateOf(ProtectionStore.loadTodayUsage(context)) }
+    var isAppUnlocked by remember { mutableStateOf(protectionSettings.mode == ProtectionMode.NORMAL) }
+    var showLockedSimulator by remember { mutableStateOf(false) }
+    var lockStartedAt by remember { mutableLongStateOf(System.currentTimeMillis()) }
+    val qrScanCoordinator = remember { QrScanCoordinator() }
+    val lifecycleOwner = LocalLifecycleOwner.current
+    val qrScannerLauncher = rememberLauncherForActivityResult(ScanContract()) { result ->
+        qrScanCoordinator.externalFlowActive = false
+        val handler = qrScanCoordinator.resultHandler
+        qrScanCoordinator.resultHandler = null
+        handler?.invoke(result.contents)
+    }
+    val requestQrScan: (((String?) -> Unit) -> Unit) = { handler ->
+        qrScanCoordinator.externalFlowActive = true
+        qrScanCoordinator.resultHandler = handler
+        qrScannerLauncher.launch(
+            ScanOptions().apply {
+                setDesiredBarcodeFormats(ScanOptions.QR_CODE)
+                setPrompt("등록한 QR 코드를 화면 안에 맞춰 주세요")
+                setBeepEnabled(false)
+                setOrientationLocked(true)
+                setCaptureActivity(PortraitCaptureActivity::class.java)
+            }
+        )
+    }
+    DisposableEffect(lifecycleOwner, protectionSettings.mode) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (
+                event == Lifecycle.Event.ON_STOP &&
+                protectionSettings.mode != ProtectionMode.NORMAL &&
+                !qrScanCoordinator.externalFlowActive
+            ) {
+                isAppUnlocked = false
+                showLockedSimulator = false
+                lockStartedAt = System.currentTimeMillis()
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
     val systemDark = isSystemInDarkTheme()
     val darkMode = when (appSettings.displayMode) {
         DisplayMode.DARK -> true
@@ -722,12 +773,13 @@ private fun LongRunApp() {
     var goalPlan by remember { mutableStateOf(savedState.goalPlan) }
     var usdKrw by remember { mutableStateOf(savedState.usdKrw) }
     var isRefreshing by remember { mutableStateOf(false) }
+    applyCurrencyDisplay(appSettings.currency, usdKrw)
 
     val drawerState = rememberDrawerState(initialValue = DrawerValue.Closed)
     val scope = rememberCoroutineScope()
     val selectedAccount = accounts.firstOrNull { it.id == selectedAccountId }
     val backupExportLauncher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.CreateDocument("application/json")
+        contract = ActivityResultContracts.CreateDocument("*/*")
     ) { uri ->
         if (uri != null) {
             val result = exportAppBackup(
@@ -749,6 +801,11 @@ private fun LongRunApp() {
             if (result.success) {
                 val restoredState = loadAppState(context)
                 appSettings = loadAppSettings(context)
+                val restoredProtectionSettings = ProtectionStore.loadSettings(context)
+                protectionSettings = restoredProtectionSettings
+                dailyProtectionUsage = ProtectionStore.loadTodayUsage(context)
+                isAppUnlocked = restoredProtectionSettings.mode == ProtectionMode.NORMAL
+                lockStartedAt = System.currentTimeMillis()
                 accounts.clear()
                 accounts.addAll(restoredState.accounts)
                 selectedAccountId = restoredState.accounts.firstOrNull()?.id ?: 0
@@ -835,7 +892,48 @@ private fun LongRunApp() {
         }
     }
 
+    fun unlockProtectedApp() {
+        val currentUsage = ProtectionStore.loadTodayUsage(context)
+        if (currentUsage.entryCount >= protectionSettings.mode.dailyEntryLimit) {
+            dailyProtectionUsage = currentUsage
+            Toast.makeText(context, "오늘 허용된 진입 횟수를 모두 사용했어요.", Toast.LENGTH_LONG).show()
+            return
+        }
+        dailyProtectionUsage = ProtectionStore.recordEntry(context)
+        showLockedSimulator = false
+        isAppUnlocked = true
+    }
+
     LongRunPortfolioTheme(darkTheme = darkMode, dynamicColor = false) {
+    if (protectionSettings.mode != ProtectionMode.NORMAL && !isAppUnlocked) {
+        if (showLockedSimulator) {
+            ScaledApp(scale = 0.7f) {
+                BacktestScreen(
+                    accounts = accounts,
+                    settings = appSettings,
+                    usdKrw = usdKrw,
+                    onLockedExit = { showLockedSimulator = false }
+                )
+            }
+        } else {
+            AppProtectionLockScreen(
+                settings = protectionSettings,
+                dailyUsage = dailyProtectionUsage,
+                lockStartedAt = lockStartedAt,
+                onUnlock = ::unlockProtectedApp,
+                onOpenSimulator = { showLockedSimulator = true },
+                onRequestQrUnlock = {
+                    requestQrScan { content ->
+                        if (protectionSettings.matchesQr(content)) {
+                            unlockProtectedApp()
+                        } else if (content != null) {
+                            Toast.makeText(context, "등록된 QR 코드와 일치하지 않습니다.", Toast.LENGTH_LONG).show()
+                        }
+                    }
+                }
+            )
+        }
+    } else {
     ModalNavigationDrawer(
         drawerState = drawerState,
         drawerContent = {
@@ -1082,6 +1180,7 @@ private fun LongRunApp() {
             AppRoute.Settings -> ScaledApp(scale = 0.84f) {
                 SettingsScreen(
                     settings = appSettings,
+                    protectionSettings = protectionSettings,
                     accounts = accounts,
                     onBack = { route = AppRoute.Main },
                     onDisplayModeClick = { route = AppRoute.DisplayModeSettings },
@@ -1094,6 +1193,14 @@ private fun LongRunApp() {
                         appSettings = updated
                         saveAppSettings(context, updated)
                     },
+                    onProtectionSettingsChange = { updated ->
+                        val normalized = updated.copy(investmentPrinciple = updated.investmentPrinciple.trim())
+                        protectionSettings = normalized
+                        ProtectionStore.saveSettings(context, normalized)
+                        isAppUnlocked = true
+                        dailyProtectionUsage = ProtectionStore.loadTodayUsage(context)
+                    },
+                    onRequestQrScan = requestQrScan,
                     onBackupClick = {
                         backupExportLauncher.launch(appBackupFileName())
                     },
@@ -1384,6 +1491,7 @@ private fun LongRunApp() {
                 )
             }
         }
+    }
     }
     }
 }
@@ -2494,13 +2602,10 @@ private fun PortfolioDividendRow(item: PortfolioDividendItem, showNetAmount: Boo
     }
 }
 
-private const val PortfolioDividendTaxRate = 0.154
-private const val OverseasDividendTaxRate = 0.15
-private const val DividendComprehensiveTaxThresholdWon = 20_000_000.0
-private const val DividendHealthInsuranceFinancialIncomeThresholdWon = 20_000_000.0
-private const val DividendDefaultComprehensiveExtraTaxRate = 6.6
-private const val DividendHealthInsuranceRate = 0.0719
-private const val DividendLongTermCareRate = 0.009448
+private const val PortfolioDividendTaxRate = DividendTaxEngine.DOMESTIC_WITHHOLDING_TAX_RATE
+private const val OverseasDividendTaxRate = DividendTaxEngine.OVERSEAS_WITHHOLDING_TAX_RATE
+private const val DividendDefaultComprehensiveExtraTaxRate =
+    DividendTaxEngine.DEFAULT_COMPREHENSIVE_EXTRA_TAX_RATE_PERCENT
 
 private fun portfolioDividendDisplayAmount(grossAmount: Long, showNetAmount: Boolean): Long =
     if (showNetAmount) (grossAmount * (1.0 - PortfolioDividendTaxRate)).roundToLong() else grossAmount
@@ -2508,38 +2613,32 @@ private fun portfolioDividendDisplayAmount(grossAmount: Long, showNetAmount: Boo
 private fun dividendWithholdingTaxRate(candidate: DividendEtfUi): Double =
     if (candidate.currency.equals("USD", ignoreCase = true)) OverseasDividendTaxRate else PortfolioDividendTaxRate
 
-private fun estimatedDividendHealthInsuranceWon(grossAnnualDividendWon: Double, _person: DividendPersonUi): Double {
-    if (grossAnnualDividendWon <= 0.0) return 0.0
-    val premiumRate = DividendHealthInsuranceRate + DividendLongTermCareRate
-    val assessableDividend = if (grossAnnualDividendWon > DividendHealthInsuranceFinancialIncomeThresholdWon) {
-        grossAnnualDividendWon
-    } else {
-        0.0
-    }
-    return (assessableDividend * premiumRate).coerceAtLeast(0.0)
-}
+private fun DividendPersonUi.toDividendTaxPerson(): DividendTaxPerson =
+    DividendTaxPerson(comprehensiveExtraTaxRatePercent = incomeTaxRate)
 
-private fun estimatedDividendHealthInsuranceWon(grossAnnualDividendWon: Double, people: List<DividendPersonUi>): Double {
-    if (grossAnnualDividendWon <= 0.0) return 0.0
-    val activePeople = people.ifEmpty { listOf(DividendPersonUi(1L, "본인")) }
-    val perPersonGross = grossAnnualDividendWon / activePeople.size
-    return activePeople.sumOf { estimatedDividendHealthInsuranceWon(perPersonGross, it) }
-}
+private fun estimatedDividendHealthInsuranceWon(
+    grossAnnualDividendWon: Double,
+    _person: DividendPersonUi
+): Double = DividendTaxEngine.estimatedHealthInsuranceWon(grossAnnualDividendWon)
 
-private fun dividendComprehensiveExtraTaxRate(person: DividendPersonUi): Double =
-    (person.incomeTaxRate.takeIf { it > 0.0 } ?: DividendDefaultComprehensiveExtraTaxRate).coerceAtLeast(0.0)
+private fun estimatedDividendHealthInsuranceWon(
+    grossAnnualDividendWon: Double,
+    people: List<DividendPersonUi>
+): Double = DividendTaxEngine.estimatedHealthInsuranceWon(
+    grossAnnualDividendWon = grossAnnualDividendWon,
+    people = people.map(DividendPersonUi::toDividendTaxPerson)
+)
 
 private fun dividendAfterTaxAnnualWon(
     grossAnnualDividendWon: Double,
     person: DividendPersonUi,
     withholdingTaxRate: Double = PortfolioDividendTaxRate
 ): Double {
-    val gross = grossAnnualDividendWon.coerceAtLeast(0.0)
-    val dividendTax = gross * withholdingTaxRate.coerceAtLeast(0.0)
-    val comprehensiveTaxBase = (gross - DividendComprehensiveTaxThresholdWon).coerceAtLeast(0.0)
-    val extraIncomeTax = comprehensiveTaxBase * (dividendComprehensiveExtraTaxRate(person) / 100.0)
-    val healthInsurance = estimatedDividendHealthInsuranceWon(gross, person)
-    return (gross - dividendTax - extraIncomeTax - healthInsurance).coerceAtLeast(0.0)
+    return DividendTaxEngine.afterTaxAnnualWon(
+        grossAnnualDividendWon = grossAnnualDividendWon,
+        person = person.toDividendTaxPerson(),
+        withholdingTaxRate = withholdingTaxRate
+    )
 }
 
 private fun dividendAfterTaxAnnualWon(
@@ -2547,11 +2646,11 @@ private fun dividendAfterTaxAnnualWon(
     people: List<DividendPersonUi>,
     withholdingTaxRate: Double = PortfolioDividendTaxRate
 ): Double {
-    val gross = grossAnnualDividendWon.coerceAtLeast(0.0)
-    if (gross <= 0.0) return 0.0
-    val activePeople = people.ifEmpty { listOf(DividendPersonUi(1L, "본인")) }
-    val perPersonGross = gross / activePeople.size
-    return activePeople.sumOf { dividendAfterTaxAnnualWon(perPersonGross, it, withholdingTaxRate) }
+    return DividendTaxEngine.afterTaxAnnualWon(
+        grossAnnualDividendWon = grossAnnualDividendWon,
+        people = people.map(DividendPersonUi::toDividendTaxPerson),
+        withholdingTaxRate = withholdingTaxRate
+    )
 }
 
 private fun requiredDividendShares(
@@ -2560,21 +2659,12 @@ private fun requiredDividendShares(
     people: List<DividendPersonUi>,
     withholdingTaxRate: Double = PortfolioDividendTaxRate
 ): Long {
-    if (grossAnnualDividendPerShare <= 0.0 || targetAnnualDividendWon <= 0L) return 0L
-    fun annualDividendFor(shares: Long): Double =
-        dividendAfterTaxAnnualWon(shares * grossAnnualDividendPerShare, people, withholdingTaxRate)
-
-    var high = 1L
-    val maxShares = 10_000_000_000L
-    while (annualDividendFor(high) < targetAnnualDividendWon && high < maxShares) {
-        high = (high * 2).coerceAtMost(maxShares)
-    }
-    var low = 0L
-    while (low < high) {
-        val mid = low + (high - low) / 2
-        if (annualDividendFor(mid) >= targetAnnualDividendWon) high = mid else low = mid + 1
-    }
-    return low
+    return DividendTaxEngine.requiredShares(
+        grossAnnualDividendPerShare = grossAnnualDividendPerShare,
+        targetAnnualDividendWon = targetAnnualDividendWon,
+        people = people.map(DividendPersonUi::toDividendTaxPerson),
+        withholdingTaxRate = withholdingTaxRate
+    )
 }
 
 @Composable
@@ -2644,6 +2734,30 @@ private fun formatDividendPerShare(item: PortfolioDividendItem): String =
 private fun compactWon(value: Long): String =
     if (value >= 10_000L) "${NumberFormat.getNumberInstance(Locale.KOREA).format(value / 10_000)}만" else value.toString()
 
+private fun dividendProjectionInputKey(
+    ticker: String,
+    modeIndex: Int,
+    targetInput: String,
+    people: List<DividendPersonUi>,
+    usdKrw: Double
+): String = buildString {
+    append(ticker.uppercase(Locale.US))
+    append('|')
+    append(modeIndex)
+    append('|')
+    append(targetInput.filter(Char::isDigit))
+    append('|')
+    append(usdKrw.toBits())
+    people.forEach { person ->
+        append('|')
+        append(person.id)
+        append(':')
+        append(person.incomeTaxRate.toBits())
+        append(':')
+        append(person.annualPensionIncome)
+    }
+}
+
 @Composable
 private fun DividendScreen(accounts: List<AccountUi>, usdKrw: Double) {
     MainTabScreenColumn {
@@ -2656,6 +2770,7 @@ private fun DividendScreen(accounts: List<AccountUi>, usdKrw: Double) {
 @Composable
 private fun DividendSimulationContent(accounts: List<AccountUi>, usdKrw: Double) {
     val context = LocalContext.current
+    val scope = rememberCoroutineScope()
     remember(context) {
         if (savedDividendSimulationPresetsCache.isEmpty()) {
             savedDividendSimulationPresetsCache.addAll(loadSavedDividendPresets(context))
@@ -2663,7 +2778,11 @@ private fun DividendSimulationContent(accounts: List<AccountUi>, usdKrw: Double)
         true
     }
     val candidates = remember { dividendCandidates() }
-    val cachedPreset = remember { lastDividendSimulationPresetCache }
+    val cachedPreset = remember(context) {
+        (lastDividendSimulationPresetCache ?: loadLastDividendPreset(context)).also {
+            lastDividendSimulationPresetCache = it
+        }
+    }
     val savedPresets = remember {
         mutableStateListOf<DividendSimulationPreset>().also { it.addAll(savedDividendSimulationPresetsCache) }
     }
@@ -2689,6 +2808,15 @@ private fun DividendSimulationContent(accounts: List<AccountUi>, usdKrw: Double)
     var presetName by remember { mutableStateOf("") }
     var deletePerson by remember { mutableStateOf<DividendPersonUi?>(null) }
     var deletePreset by remember { mutableStateOf<DividendSimulationPreset?>(null) }
+    var renamePreset by remember { mutableStateOf<DividendSimulationPreset?>(null) }
+    var chartSnapshot by remember(context) {
+        mutableStateOf(
+            (lastDividendChartUpdateSnapshotCache ?: loadLastDividendChartUpdateSnapshot(context)).also {
+                lastDividendChartUpdateSnapshotCache = it
+            }
+        )
+    }
+    var isUpdatingCharts by remember { mutableStateOf(false) }
 
     if (people.isEmpty()) people.addAll(defaultPeople)
     val activePeople = people.toList().ifEmpty { defaultPeople }
@@ -2725,7 +2853,11 @@ private fun DividendSimulationContent(accounts: List<AccountUi>, usdKrw: Double)
             activePeople,
             dividendWithholdingTaxRate(candidate)
         ).roundToLong()
-        val growthRate = dividendGrowthMetric(context, candidate).numericValue ?: candidate.dividendGrowth5y
+        val growthRate = chartSnapshot
+            ?.takeIf { it.ticker.equals(candidate.ticker, ignoreCase = true) }
+            ?.dividendGrowthMetric
+            ?.numericValue
+            ?: candidate.dividendGrowth5y
         val fiveYearAnnualDividend = (annualDividend * (1.0 + growthRate / 100.0).pow(5.0)).roundToLong()
         DividendHoldingProjection(
             holding = holding,
@@ -2742,8 +2874,31 @@ private fun DividendSimulationContent(accounts: List<AccountUi>, usdKrw: Double)
         1 -> targetAmount / 12
         else -> expectedMonthlyDividend
     }
-    val dividendGrowthMetric = dividendGrowthMetric(context, selected)
-    val priceGrowthMetric = dividendPriceGrowthMetric(context, selected)
+    val selectedChartSnapshot = chartSnapshot?.takeIf { it.ticker.equals(selected.ticker, ignoreCase = true) }
+    val displayedDividendGrowthMetric = selectedChartSnapshot?.dividendGrowthMetric ?: DividendMetricUi(
+        label = "평균 배당성장율",
+        value = "${formatDecimal(selected.dividendGrowth5y)}%",
+        numericValue = selected.dividendGrowth5y
+    )
+    val displayedPriceGrowthMetric = selectedChartSnapshot?.priceGrowthMetric ?: DividendMetricUi(
+        label = "평균 가격성장률",
+        value = "${formatDecimal(selected.priceGrowth10y)}%",
+        numericValue = selected.priceGrowth10y
+    )
+    val chartCandidate = chartSnapshot?.let { snapshot ->
+        candidates.firstOrNull { it.ticker.equals(snapshot.ticker, ignoreCase = true) }
+    }
+    val currentProjectionInputKey = dividendProjectionInputKey(
+        ticker = selected.ticker,
+        modeIndex = modeIndex,
+        targetInput = targetInput,
+        people = activePeople,
+        usdKrw = usdKrw
+    )
+    val currentProjectionRows = chartSnapshot
+        ?.takeIf { it.inputKey == currentProjectionInputKey }
+        ?.projectionRows
+        .orEmpty()
 
     fun currentPreset(name: String = "마지막 배당 시뮬레이션") = DividendSimulationPreset(
         name = name,
@@ -2752,8 +2907,93 @@ private fun DividendSimulationContent(accounts: List<AccountUi>, usdKrw: Double)
         targetInput = targetInput,
         showAfterTax = true,
         selectedPersonId = selectedPersonId,
-        people = people.toList()
+        people = people.toList(),
+        projectionRows = currentProjectionRows
     )
+
+    fun saveNamedPreset(name: String) {
+        val preset = currentPreset(name)
+        savedPresets.removeAll { it.name == preset.name }
+        savedDividendSimulationPresetsCache.removeAll { it.name == preset.name }
+        savedPresets.add(preset)
+        savedDividendSimulationPresetsCache.add(preset)
+        saveSavedDividendPresets(context, savedDividendSimulationPresetsCache)
+        lastDividendSimulationPresetCache = preset
+        presetName = ""
+        showSaveDialog = false
+        Toast.makeText(context, "배당 시뮬레이션을 저장했어요.", Toast.LENGTH_SHORT).show()
+    }
+
+    fun renameSavedPreset(preset: DividendSimulationPreset, newName: String) {
+        val renamed = preset.copy(name = newName)
+        val listIndex = savedPresets.indexOfFirst { it.name == preset.name }
+        val cacheIndex = savedDividendSimulationPresetsCache.indexOfFirst { it.name == preset.name }
+        if (listIndex >= 0) savedPresets[listIndex] = renamed
+        if (cacheIndex >= 0) savedDividendSimulationPresetsCache[cacheIndex] = renamed
+        saveSavedDividendPresets(context, savedDividendSimulationPresetsCache)
+        if (lastDividendSimulationPresetCache?.name == preset.name) {
+            lastDividendSimulationPresetCache = renamed
+            saveLastDividendPreset(context, renamed)
+        }
+        renamePreset = null
+    }
+
+    SideEffect {
+        val latest = currentPreset()
+        if (latest != lastDividendSimulationPresetCache) {
+            lastDividendSimulationPresetCache = latest
+            saveLastDividendPreset(context, latest)
+        }
+    }
+
+    fun updateDividendCharts() {
+        val candidate = selected
+        val monthlyTarget = targetMonthlyDividend
+        val peopleSnapshot = activePeople.toList()
+        val grossDividendSnapshot = grossExpectedAnnualDividend
+        val initialAssetSnapshot = requiredCapital
+        val withholdingTaxSnapshot = selectedWithholdingTaxRate
+        val inputKeySnapshot = currentProjectionInputKey
+        scope.launch {
+            isUpdatingCharts = true
+            try {
+                val updated = withContext(Dispatchers.Default) {
+                    val updatedDividendGrowthMetric = dividendGrowthMetric(context, candidate)
+                    val updatedPriceGrowthMetric = dividendPriceGrowthMetric(context, candidate)
+                    DividendChartUpdateSnapshot(
+                        inputKey = inputKeySnapshot,
+                        ticker = candidate.ticker,
+                        targetMonthlyDividend = monthlyTarget,
+                        dividendGrowthMetric = updatedDividendGrowthMetric,
+                        priceGrowthMetric = updatedPriceGrowthMetric,
+                        pricePoints = dividendPriceChartPoints(context, candidate),
+                        growthPoints = dividendGrowthChartPoints(
+                            context = context,
+                            candidate = candidate,
+                            targetMonthlyDividend = monthlyTarget,
+                            people = peopleSnapshot,
+                            usdKrw = usdKrw
+                        ),
+                        projectionRows = dividendGrowthProjectionRows(
+                            grossAnnualDividend = grossDividendSnapshot,
+                            initialAsset = initialAssetSnapshot,
+                            dividendGrowthRate = updatedDividendGrowthMetric.numericValue ?: candidate.dividendGrowth5y,
+                            priceGrowthRate = updatedPriceGrowthMetric.numericValue ?: candidate.priceGrowth10y,
+                            people = peopleSnapshot,
+                            withholdingTaxRate = withholdingTaxSnapshot
+                        )
+                    )
+                }
+                chartSnapshot = updated
+                lastDividendChartUpdateSnapshotCache = updated
+                saveLastDividendChartUpdateSnapshot(context, updated)
+            } catch (_: Exception) {
+                Toast.makeText(context, "그래프 업데이트에 실패했어요.", Toast.LENGTH_SHORT).show()
+            } finally {
+                isUpdatingCharts = false
+            }
+        }
+    }
 
     fun openPersonDialog(person: DividendPersonUi? = null) {
         editingPerson = person
@@ -2823,8 +3063,8 @@ private fun DividendSimulationContent(accounts: List<AccountUi>, usdKrw: Double)
         }
         Spacer(modifier = Modifier.height(14.dp))
         Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-            DividendInfoBlock(dividendGrowthMetric.label, dividendGrowthMetric.value)
-            DividendInfoBlock(priceGrowthMetric.label, priceGrowthMetric.value)
+            DividendInfoBlock(displayedDividendGrowthMetric.label, displayedDividendGrowthMetric.value)
+            DividendInfoBlock(displayedPriceGrowthMetric.label, displayedPriceGrowthMetric.value)
             DividendInfoBlock("보유 월 배당", formatWon(ownedMonthlyDividend))
         }
     }
@@ -2918,21 +3158,32 @@ private fun DividendSimulationContent(accounts: List<AccountUi>, usdKrw: Double)
     }
 
     Spacer(modifier = Modifier.height(18.dp))
+    PrimaryActionButton(
+        text = if (isUpdatingCharts) "그래프 업데이트 중..." else "그래프 및 20년 전망 업데이트",
+        enabled = !isUpdatingCharts,
+        onClick = ::updateDividendCharts
+    )
+
+    Spacer(modifier = Modifier.height(18.dp))
     AnalysisCard {
         Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
             Column(modifier = Modifier.weight(1f)) {
                 Text("가격 차트", color = TextPrimary, fontSize = 21.sp, fontWeight = FontWeight.ExtraBold)
-                Text("${selected.ticker} · 다운로드 가격 데이터", color = TextSecondary, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                Text("${chartCandidate?.ticker ?: selected.ticker} · 다운로드 가격 데이터", color = TextSecondary, fontSize = 12.sp, fontWeight = FontWeight.Bold)
             }
             Text(
-                priceGrowthMetric.value,
-                color = if ((priceGrowthMetric.numericValue ?: 0.0) < 0) NegativeBlue else PositiveRed,
+                chartSnapshot?.priceGrowthMetric?.value ?: "업데이트 대기",
+                color = if ((chartSnapshot?.priceGrowthMetric?.numericValue ?: 0.0) < 0) NegativeBlue else PositiveRed,
                 fontSize = 14.sp,
                 fontWeight = FontWeight.ExtraBold
             )
         }
         Spacer(modifier = Modifier.height(12.dp))
-        DividendPriceChart(selected)
+        if (chartSnapshot != null && chartCandidate != null) {
+            DividendPriceChart(chartCandidate, chartSnapshot!!.pricePoints)
+        } else {
+            DividendEmptyChart("업데이트 버튼을 눌러 가격 차트를 계산해 주세요.")
+        }
     }
 
     Spacer(modifier = Modifier.height(18.dp))
@@ -2945,22 +3196,29 @@ private fun DividendSimulationContent(accounts: List<AccountUi>, usdKrw: Double)
             fontWeight = FontWeight.Bold
         )
         Spacer(modifier = Modifier.height(12.dp))
-        DividendGrowthChart(selected, targetMonthlyDividend, activePeople, usdKrw)
+        if (chartSnapshot != null && chartCandidate != null) {
+            DividendGrowthChart(
+                candidate = chartCandidate,
+                targetMonthlyDividend = chartSnapshot!!.targetMonthlyDividend,
+                points = chartSnapshot!!.growthPoints
+            )
+        } else {
+            DividendEmptyChart("업데이트 버튼을 눌러 배당 성장 흐름을 계산해 주세요.")
+        }
         Spacer(modifier = Modifier.height(14.dp))
         DividendGrowthProjectionTable(
-            rows = dividendGrowthProjectionRows(
-                grossAnnualDividend = grossExpectedAnnualDividend,
-                initialAsset = requiredCapital,
-                dividendGrowthRate = dividendGrowthMetric.numericValue ?: selected.dividendGrowth5y,
-                priceGrowthRate = priceGrowthMetric.numericValue ?: selected.priceGrowth10y,
-                people = activePeople,
-                withholdingTaxRate = selectedWithholdingTaxRate
-            )
+            rows = chartSnapshot?.projectionRows.orEmpty()
         )
     }
 
     Spacer(modifier = Modifier.height(18.dp))
-    PrimaryActionButton("배당 시뮬레이션 저장", enabled = true) { showSaveDialog = true }
+    PrimaryActionButton("배당 시뮬레이션 저장", enabled = true) {
+        if (currentProjectionRows.isEmpty()) {
+            Toast.makeText(context, "그래프 및 20년 전망을 먼저 업데이트해 주세요.", Toast.LENGTH_SHORT).show()
+        } else {
+            showSaveDialog = true
+        }
+    }
 
     if (showPersonDialog) {
         AlertDialog(
@@ -3064,38 +3322,14 @@ private fun DividendSimulationContent(accounts: List<AccountUi>, usdKrw: Double)
     }
 
     if (showSaveDialog) {
-        AlertDialog(
-            onDismissRequest = { showSaveDialog = false },
-            containerColor = PanelColor,
-            title = { Text("배당 시뮬레이션 저장", color = TextPrimary, fontWeight = FontWeight.ExtraBold) },
-            text = {
-                OutlinedTextField(
-                    value = presetName,
-                    onValueChange = { presetName = it },
-                    singleLine = true,
-                    label = { Text("저장 이름") },
-                    colors = appTextFieldColors()
-                )
-            },
-            confirmButton = {
-                TextButton(onClick = {
-                    if (presetName.isNotBlank()) {
-                        val preset = currentPreset(presetName.trim())
-                        savedPresets.removeAll { it.name == preset.name }
-                        savedDividendSimulationPresetsCache.removeAll { it.name == preset.name }
-                        savedPresets.add(preset)
-                        savedDividendSimulationPresetsCache.add(preset)
-                        saveSavedDividendPresets(context, savedDividendSimulationPresetsCache)
-                        lastDividendSimulationPresetCache = preset
-                        presetName = ""
-                        showSaveDialog = false
-                        Toast.makeText(context, "배당 시뮬레이션을 저장했어요.", Toast.LENGTH_SHORT).show()
-                    }
-                }) { Text("저장", color = BrandGreen, fontWeight = FontWeight.Bold) }
-            },
-            dismissButton = {
-                TextButton(onClick = { showSaveDialog = false }) { Text("취소", color = TextSecondary) }
-            }
+        SimulationPresetSaveDialog(
+            title = "배당 시뮬레이션 저장",
+            name = presetName,
+            existingNames = savedPresets.map { it.name },
+            onNameChange = { presetName = it },
+            onDismiss = { showSaveDialog = false },
+            onSaveNew = ::saveNamedPreset,
+            onOverwrite = ::saveNamedPreset
         )
     }
 
@@ -3125,7 +3359,10 @@ private fun DividendSimulationContent(accounts: List<AccountUi>, usdKrw: Double)
                                             lastDividendSimulationPresetCache = preset
                                             showLoadDialog = false
                                         },
-                                        onLongClick = { deletePreset = preset }
+                                        onLongClick = {
+                                            showLoadDialog = false
+                                            renamePreset = preset
+                                        }
                                     )
                                     .background(SoftSurface)
                                     .padding(12.dp),
@@ -3133,7 +3370,13 @@ private fun DividendSimulationContent(accounts: List<AccountUi>, usdKrw: Double)
                             ) {
                                 Column(modifier = Modifier.weight(1f)) {
                                     Text(preset.name, color = TextPrimary, fontWeight = FontWeight.ExtraBold)
-                                    Text("${preset.ticker} · ${preset.people.size}명", color = TextSecondary, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                                    val projectionLabel = if (preset.projectionRows.isNotEmpty()) " · 20년 전망" else ""
+                                    Text(
+                                        "${preset.ticker} · ${preset.people.size}명$projectionLabel",
+                                        color = TextSecondary,
+                                        fontSize = 12.sp,
+                                        fontWeight = FontWeight.Bold
+                                    )
                                 }
                                 Text("불러오기", color = BrandGreen, fontSize = 12.sp, fontWeight = FontWeight.ExtraBold)
                             }
@@ -3143,6 +3386,19 @@ private fun DividendSimulationContent(accounts: List<AccountUi>, usdKrw: Double)
             },
             confirmButton = {
                 TextButton(onClick = { showLoadDialog = false }) { Text("닫기", color = TextSecondary) }
+            }
+        )
+    }
+
+    renamePreset?.let { preset ->
+        SimulationPresetRenameDialog(
+            currentName = preset.name,
+            existingNames = savedPresets.map { it.name },
+            onDismiss = { renamePreset = null },
+            onRename = { renameSavedPreset(preset, it) },
+            onDelete = {
+                renamePreset = null
+                deletePreset = preset
             }
         )
     }
@@ -3215,20 +3471,44 @@ private fun DividendTargetSettingsCard(
         Spacer(modifier = Modifier.height(16.dp))
         Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
             Box(modifier = Modifier.weight(1f)) {
-                SummaryCard("필요 수량", "${NumberFormat.getNumberInstance(Locale.KOREA).format(requiredShares)}주", "목표 기준")
+                DividendTargetSummaryCard("필요 수량", "${NumberFormat.getNumberInstance(Locale.KOREA).format(requiredShares)}주", "목표 기준")
             }
             Box(modifier = Modifier.weight(1f)) {
-                SummaryCard("총 투자금", formatWon(requiredCapital), "현재가 기준")
+                DividendTargetSummaryCard("총 투자금", formatWon(requiredCapital), "현재가 기준")
             }
         }
         Spacer(modifier = Modifier.height(12.dp))
         Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
             Box(modifier = Modifier.weight(1f)) {
-                SummaryCard("예상 월 배당금", formatWon(expectedMonthlyDividend), "세후 추정")
+                DividendTargetSummaryCard("예상 월 배당금", formatWon(expectedMonthlyDividend), "세후 추정")
             }
             Box(modifier = Modifier.weight(1f)) {
-                SummaryCard("예상 연 배당금", formatWon(expectedAnnualDividend), "세후 추정")
+                DividendTargetSummaryCard("예상 연 배당금", formatWon(expectedAnnualDividend), "세후 추정")
             }
+        }
+    }
+}
+
+@Composable
+private fun DividendTargetSummaryCard(title: String, value: String, caption: String) {
+    Card(
+        colors = CardDefaults.cardColors(containerColor = SoftSurface),
+        shape = RoundedCornerShape(8.dp),
+        elevation = CardDefaults.cardElevation(0.dp)
+    ) {
+        Column(modifier = Modifier.fillMaxWidth().padding(14.dp)) {
+            Text(title, color = TextSecondary, fontSize = 12.sp, maxLines = 1)
+            Spacer(modifier = Modifier.height(6.dp))
+            Text(
+                value,
+                color = TextPrimary,
+                fontSize = 18.sp,
+                fontWeight = FontWeight.ExtraBold,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+            Spacer(modifier = Modifier.height(6.dp))
+            Text(caption, color = TextSecondary, fontSize = 12.sp, maxLines = 1)
         }
     }
 }
@@ -3278,18 +3558,7 @@ private fun DividendGrowthProjectionHeader() {
 }
 
 @Composable
-private fun DividendPriceChart(candidate: DividendEtfUi) {
-    val context = LocalContext.current
-    val points = remember(candidate.ticker) {
-        sampleDividendPricePoints(
-            loadHistoricalSeries(context, candidate.ticker)
-                .mapNotNull { point ->
-                    parseAppDate(point.date)?.let { date -> date to point.close }
-                }
-                .sortedBy { it.first },
-            maxPoints = 260
-        )
-    }
+private fun DividendPriceChart(candidate: DividendEtfUi, points: List<Pair<LocalDate, Double>>) {
     var selectedIndex by remember(candidate.ticker, points.size) { mutableStateOf<Int?>(null) }
 
     if (points.isEmpty()) {
@@ -3359,17 +3628,9 @@ private fun DividendPriceChart(candidate: DividendEtfUi) {
 private fun DividendGrowthChart(
     candidate: DividendEtfUi,
     targetMonthlyDividend: Long,
-    people: List<DividendPersonUi>,
-    usdKrw: Double
+    points: List<Pair<LocalDate, Double>>
 ) {
-    val context = LocalContext.current
-    val peopleKey = people.joinToString("|") {
-        "${it.id}:${it.incomeTaxRate}:${it.annualPensionIncome}"
-    }
-    val points = remember(candidate.ticker, targetMonthlyDividend, peopleKey, usdKrw) {
-        dividendGrowthChartPoints(context, candidate, targetMonthlyDividend, people, usdKrw)
-    }
-    var selectedIndex by remember(candidate.ticker, targetMonthlyDividend, peopleKey, usdKrw, points.size) { mutableStateOf<Int?>(null) }
+    var selectedIndex by remember(candidate.ticker, targetMonthlyDividend, points.size) { mutableStateOf<Int?>(null) }
 
     if (targetMonthlyDividend <= 0L) {
         DividendEmptyChart("목표 월 배당액을 입력하면 배당 성장 흐름을 보여줍니다.")
@@ -3452,6 +3713,18 @@ private fun sampleDividendPricePoints(points: List<Pair<LocalDate, Double>>, max
         .distinctBy { it.first }
 }
 
+private fun dividendPriceChartPoints(
+    context: Context,
+    candidate: DividendEtfUi
+): List<Pair<LocalDate, Double>> = sampleDividendPricePoints(
+    loadHistoricalSeries(context, candidate.ticker)
+        .mapNotNull { point ->
+            parseAppDate(point.date)?.let { date -> date to point.close }
+        }
+        .sortedBy { it.first },
+    maxPoints = 260
+)
+
 private fun dividendGrowthChartPoints(
     context: Context,
     candidate: DividendEtfUi,
@@ -3521,24 +3794,16 @@ private fun dividendGrowthProjectionRows(
     people: List<DividendPersonUi>,
     withholdingTaxRate: Double
 ): List<DividendGrowthProjectionRow> {
-    if (grossAnnualDividend <= 0.0 || initialAsset <= 0L) return emptyList()
-
-    val annualDividendGrowth = 1.0 + dividendGrowthRate / 100.0
-    val annualPriceGrowth = 1.0 + priceGrowthRate / 100.0
-    return (1..20).map { year ->
-        val dividendFactor = annualDividendGrowth.pow(year.toDouble())
-        val assetFactor = annualPriceGrowth.pow(year.toDouble())
-        val annualAfterTaxDividend = dividendAfterTaxAnnualWon(
-            grossAnnualDividendWon = grossAnnualDividend * dividendFactor,
-            people = people,
+    return DividendProjectionEngine.calculate(
+        input = DividendProjectionInput(
+            grossAnnualDividendWon = grossAnnualDividend,
+            initialAssetWon = initialAsset,
+            dividendGrowthRatePercent = dividendGrowthRate,
+            priceGrowthRatePercent = priceGrowthRate,
+            people = people.map(DividendPersonUi::toDividendTaxPerson),
             withholdingTaxRate = withholdingTaxRate
         )
-        DividendGrowthProjectionRow(
-            year = year,
-            monthlyDividend = (annualAfterTaxDividend / 12.0).roundToLong().coerceAtLeast(0L),
-            totalAsset = (initialAsset * assetFactor).roundToLong().coerceAtLeast(0L)
-        )
-    }
+    )
 }
 
 private fun dividendPriceLabel(candidate: DividendEtfUi, value: Double): String =
@@ -4298,11 +4563,14 @@ private fun AccountIconChoice(
 @Composable
 private fun SettingsScreen(
     settings: AppSettings,
+    protectionSettings: ProtectionSettings,
     accounts: List<AccountUi>,
     onBack: () -> Unit,
     onDisplayModeClick: () -> Unit,
     onCurrencyChange: (String) -> Unit,
     onApiSettingsSave: (AppSettings) -> Unit,
+    onProtectionSettingsChange: (ProtectionSettings) -> Unit,
+    onRequestQrScan: (((String?) -> Unit) -> Unit),
     onBackupClick: () -> Unit,
     onRestoreClick: () -> Unit
 ) {
@@ -4314,29 +4582,52 @@ private fun SettingsScreen(
     var manualAssetVersion by remember { mutableIntStateOf(0) }
     var showDataDownloadSheet by remember { mutableStateOf(false) }
     var bulkDownloadRunning by remember { mutableStateOf(false) }
+    var showProtectionSheet by remember { mutableStateOf(false) }
+    var showPrincipleDialog by remember { mutableStateOf(false) }
+    var qrReplacementAuthorized by remember { mutableStateOf(false) }
+    var showRegisteredQr by remember { mutableStateOf(false) }
     val manualAssetCount = remember(manualAssetVersion) { loadCustomAssetOptions(context).size }
+    val headerTopPadding = WindowInsets.statusBars.asPaddingValues().calculateTopPadding() + 12.dp
 
-    ScreenColumn {
+    ScreenColumn(topPadding = 0) {
+        Spacer(modifier = Modifier.height(headerTopPadding))
         PlainTopBar(title = "설정", onBack = onBack, rightText = "", onRightClick = {})
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Box(
-                modifier = Modifier
-                    .size(58.dp)
-                    .clip(CircleShape)
-                    .background(Color(0xFF9BE7B4)),
-                contentAlignment = Alignment.Center
-            ) {
-                Text("정", color = Color.White, fontSize = 21.sp, fontWeight = FontWeight.ExtraBold)
-            }
-            Spacer(modifier = Modifier.width(16.dp))
-            Column(modifier = Modifier.weight(1f)) {
-                Text("김정훈", color = TextPrimary, fontSize = 21.sp, fontWeight = FontWeight.ExtraBold)
-                Text("@dg4799", color = TextSecondary, fontSize = 15.sp, fontWeight = FontWeight.Medium)
-            }
-            Text("›", color = MutedText, fontSize = 34.sp)
-        }
-        Spacer(modifier = Modifier.height(56.dp))
+        Spacer(modifier = Modifier.height(32.dp))
 
+        SettingsSectionTitle("접근 보호")
+        SettingsValueRow(
+            title = "보호 모드",
+            value = protectionModeLabel(protectionSettings.mode),
+            onClick = { showProtectionSheet = true }
+        )
+        SettingsValueRow(
+            title = "QR 코드 설정",
+            value = if (protectionSettings.hasQr) "설정됨" else "미설정",
+            onClick = {
+                if (!protectionSettings.hasQr) {
+                    onRequestQrScan { content ->
+                        if (!content.isNullOrEmpty()) {
+                            onProtectionSettingsChange(
+                                protectionSettings.copy(
+                                    qrHash = hashQrContent(content),
+                                    qrContent = content
+                                )
+                            )
+                            Toast.makeText(context, "QR 코드를 등록했어요.", Toast.LENGTH_SHORT).show()
+                        }
+                    }
+                } else {
+                    showRegisteredQr = true
+                }
+            }
+        )
+        SettingsValueRow(
+            title = "투자 원칙 문장",
+            value = if (protectionSettings.investmentPrinciple.isBlank()) "미입력" else "입력됨",
+            onClick = { showPrincipleDialog = true }
+        )
+
+        Spacer(modifier = Modifier.height(46.dp))
         SettingsSectionTitle("화면")
         SettingsValueRow(
             title = "화면 모드 설정",
@@ -4344,16 +4635,10 @@ private fun SettingsScreen(
             onClick = onDisplayModeClick
         )
         SettingsValueRow(
-            title = "차트 색상 설정",
-            value = "한국",
-            onClick = {}
-        )
-        SettingsValueRow(
             title = "통화 설정",
             value = currencyLabel(settings.currency),
             onClick = { showCurrencySheet = true }
         )
-        SettingsToggleRow(title = "환차익 적용", checked = true)
 
         Spacer(modifier = Modifier.height(46.dp))
         SettingsSectionTitle("종목")
@@ -4457,6 +4742,98 @@ private fun SettingsScreen(
         )
     }
 
+    if (showProtectionSheet) {
+        ProtectionModeSettingsSheet(
+            selectedMode = protectionSettings.mode,
+            onDismiss = { showProtectionSheet = false },
+            onSelect = { targetMode ->
+                when {
+                    targetMode == protectionSettings.mode -> showProtectionSheet = false
+                    !protectionSettings.hasQr -> Toast.makeText(
+                        context,
+                        "모드를 변경하려면 QR 코드를 먼저 등록해 주세요.",
+                        Toast.LENGTH_LONG
+                    ).show()
+                    targetMode.requiresPrinciple && protectionSettings.investmentPrinciple.isBlank() -> Toast.makeText(
+                        context,
+                        "중간 보호 모드에 사용할 투자 원칙 문장을 먼저 입력해 주세요.",
+                        Toast.LENGTH_LONG
+                    ).show()
+                    else -> onRequestQrScan { content ->
+                        if (protectionSettings.matchesQr(content)) {
+                            onProtectionSettingsChange(protectionSettings.copy(mode = targetMode))
+                            showProtectionSheet = false
+                            Toast.makeText(context, "${protectionModeLabel(targetMode)}로 변경했어요.", Toast.LENGTH_SHORT).show()
+                        } else if (content != null) {
+                            Toast.makeText(context, "등록된 QR 코드와 일치하지 않습니다.", Toast.LENGTH_LONG).show()
+                        }
+                    }
+                }
+            }
+        )
+    }
+
+    if (showPrincipleDialog) {
+        InvestmentPrincipleDialog(
+            initialValue = protectionSettings.investmentPrinciple,
+            onDismiss = { showPrincipleDialog = false },
+            onSave = { principle ->
+                onProtectionSettingsChange(protectionSettings.copy(investmentPrinciple = principle.trim()))
+                showPrincipleDialog = false
+            }
+        )
+    }
+
+    if (showRegisteredQr) {
+        RegisteredQrDialog(
+            qrContent = protectionSettings.qrContent,
+            onDismiss = { showRegisteredQr = false },
+            onChange = {
+                showRegisteredQr = false
+                onRequestQrScan { content ->
+                    if (protectionSettings.matchesQr(content)) {
+                        qrReplacementAuthorized = true
+                    } else if (content != null) {
+                        Toast.makeText(context, "현재 등록된 QR 코드가 아닙니다.", Toast.LENGTH_LONG).show()
+                    }
+                }
+            }
+        )
+    }
+
+    if (qrReplacementAuthorized) {
+        AlertDialog(
+            onDismissRequest = { qrReplacementAuthorized = false },
+            containerColor = PanelColor,
+            shape = RoundedCornerShape(28.dp),
+            title = { Text("새 QR 코드 등록", color = TextPrimary, fontWeight = FontWeight.ExtraBold) },
+            text = { Text("새롭게 사용할 QR 코드를 스캔해 주세요.", color = TextSecondary, lineHeight = 20.sp) },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        qrReplacementAuthorized = false
+                        onRequestQrScan { content ->
+                            if (!content.isNullOrEmpty()) {
+                                onProtectionSettingsChange(
+                                    protectionSettings.copy(
+                                        qrHash = hashQrContent(content),
+                                        qrContent = content
+                                    )
+                                )
+                                Toast.makeText(context, "QR 코드를 변경했어요.", Toast.LENGTH_SHORT).show()
+                            }
+                        }
+                    }
+                ) { Text("스캔", color = BrandGreen, fontWeight = FontWeight.Bold) }
+            },
+            dismissButton = {
+                TextButton(onClick = { qrReplacementAuthorized = false }) {
+                    Text("취소", color = TextSecondary, fontWeight = FontWeight.Bold)
+                }
+            }
+        )
+    }
+
     if (showManualAssetSheet) {
         ManualAssetSettingsSheet(
             onDismiss = { showManualAssetSheet = false },
@@ -4475,6 +4852,285 @@ private fun SettingsScreen(
                 }
             }
         )
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun ProtectionModeSettingsSheet(
+    selectedMode: ProtectionMode,
+    onDismiss: () -> Unit,
+    onSelect: (ProtectionMode) -> Unit
+) {
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
+        containerColor = PanelColor,
+        shape = RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp)
+    ) {
+        Column(modifier = Modifier.fillMaxWidth().padding(horizontal = 22.dp, vertical = 8.dp)) {
+            Text("보호 모드", color = TextPrimary, fontSize = 25.sp, fontWeight = FontWeight.ExtraBold)
+            Spacer(modifier = Modifier.height(6.dp))
+            Text("모드 변경은 등록된 QR 코드 확인 후 적용됩니다.", color = TextSecondary, fontSize = 13.sp)
+            Spacer(modifier = Modifier.height(18.dp))
+            ProtectionMode.entries.forEach { mode ->
+                val selected = mode == selectedMode
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(8.dp))
+                        .background(if (selected) BrandSoftBlue.copy(alpha = 0.22f) else Color.Transparent)
+                        .clickable { onSelect(mode) }
+                        .padding(horizontal = 14.dp, vertical = 14.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(protectionModeLabel(mode), color = TextPrimary, fontSize = 17.sp, fontWeight = FontWeight.ExtraBold)
+                        Spacer(modifier = Modifier.height(3.dp))
+                        Text(protectionModeDescription(mode), color = TextSecondary, fontSize = 12.sp, lineHeight = 17.sp)
+                    }
+                    SmallRadio(selected = selected, selectedColor = BrandGreen)
+                }
+                Spacer(modifier = Modifier.height(6.dp))
+            }
+            Spacer(modifier = Modifier.height(22.dp))
+        }
+    }
+}
+
+@Composable
+private fun InvestmentPrincipleDialog(
+    initialValue: String,
+    onDismiss: () -> Unit,
+    onSave: (String) -> Unit
+) {
+    var principle by remember(initialValue) { mutableStateOf(initialValue) }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        containerColor = PanelColor,
+        shape = RoundedCornerShape(28.dp),
+        title = { Text("투자 원칙 문장", color = TextPrimary, fontWeight = FontWeight.ExtraBold) },
+        text = {
+            Column {
+                Text("중간 보호 모드 진입 시 동일한 문장을 직접 입력합니다.", color = TextSecondary, fontSize = 13.sp, lineHeight = 19.sp)
+                Spacer(modifier = Modifier.height(12.dp))
+                OutlinedTextField(
+                    value = principle,
+                    onValueChange = { principle = it.take(200) },
+                    placeholder = { Text("예: 가격보다 원칙을 먼저 확인한다") },
+                    minLines = 3,
+                    maxLines = 5,
+                    colors = appTextFieldColors(),
+                    shape = RoundedCornerShape(8.dp),
+                    modifier = Modifier.fillMaxWidth()
+                )
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = { onSave(principle) }, enabled = principle.trim().isNotEmpty()) {
+                Text("저장", color = if (principle.trim().isNotEmpty()) BrandGreen else MutedText, fontWeight = FontWeight.Bold)
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("취소", color = TextSecondary, fontWeight = FontWeight.Bold) }
+        }
+    )
+}
+
+@Composable
+private fun RegisteredQrDialog(
+    qrContent: String,
+    onDismiss: () -> Unit,
+    onChange: () -> Unit
+) {
+    val qrImage = remember(qrContent) {
+        qrContent.takeIf { it.isNotBlank() }?.let { content ->
+            runCatching {
+                BarcodeEncoder()
+                    .encodeBitmap(content, BarcodeFormat.QR_CODE, 720, 720)
+                    .asImageBitmap()
+            }.getOrNull()
+        }
+    }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        containerColor = PanelColor,
+        shape = RoundedCornerShape(28.dp),
+        title = { Text("등록된 QR 코드", color = TextPrimary, fontWeight = FontWeight.ExtraBold) },
+        text = {
+            Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.fillMaxWidth()) {
+                if (qrImage != null) {
+                    Image(
+                        bitmap = qrImage,
+                        contentDescription = "등록된 보호 모드 QR 코드",
+                        modifier = Modifier
+                            .size(250.dp)
+                            .clip(RoundedCornerShape(8.dp))
+                            .background(Color.White)
+                            .padding(12.dp)
+                    )
+                    Spacer(modifier = Modifier.height(10.dp))
+                    Text("이 QR 코드가 보호 모드 인증에 사용됩니다.", color = TextSecondary, fontSize = 12.sp)
+                } else {
+                    Text(
+                        "기존 등록은 해시만 저장되어 QR 이미지를 복원할 수 없습니다. 기존 QR을 확인한 뒤 다시 등록해 주세요.",
+                        color = TextSecondary,
+                        fontSize = 13.sp,
+                        lineHeight = 20.sp,
+                        textAlign = TextAlign.Center
+                    )
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onDismiss) {
+                Text("닫기", color = BrandGreen, fontWeight = FontWeight.Bold)
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onChange) {
+                Text(if (qrContent.isBlank()) "다시 등록" else "변경", color = TextSecondary, fontWeight = FontWeight.Bold)
+            }
+        }
+    )
+}
+
+@Composable
+private fun AppProtectionLockScreen(
+    settings: ProtectionSettings,
+    dailyUsage: ProtectionDailyUsage,
+    lockStartedAt: Long,
+    onUnlock: () -> Unit,
+    onOpenSimulator: () -> Unit,
+    onRequestQrUnlock: () -> Unit
+) {
+    BackHandler(enabled = true) {}
+    var nowMillis by remember(lockStartedAt) { mutableLongStateOf(System.currentTimeMillis()) }
+    var enteredPrinciple by remember(settings.investmentPrinciple) { mutableStateOf("") }
+    var principleMismatch by remember { mutableStateOf(false) }
+    LaunchedEffect(lockStartedAt) {
+        while (true) {
+            nowMillis = System.currentTimeMillis()
+            delay(1_000L)
+        }
+    }
+
+    val remainingMillis = (lockStartedAt + settings.mode.waitMillis - nowMillis).coerceAtLeast(0L)
+    val waitFinished = remainingMillis <= 0L
+    val limitReached = dailyUsage.entryCount >= settings.mode.dailyEntryLimit
+    val remainingEntries = (settings.mode.dailyEntryLimit - dailyUsage.entryCount).coerceAtLeast(0)
+
+    Box(modifier = Modifier.fillMaxSize().background(AppBackground), contentAlignment = Alignment.Center) {
+        Column(
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 28.dp),
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            Text("잠시 멈춤", color = TextPrimary, fontSize = 30.sp, fontWeight = FontWeight.ExtraBold)
+            Spacer(modifier = Modifier.height(8.dp))
+            Text(protectionModeLabel(settings.mode), color = BrandGreen, fontSize = 15.sp, fontWeight = FontWeight.Bold)
+            Spacer(modifier = Modifier.height(34.dp))
+
+            if (limitReached) {
+                Text("오늘 진입 종료", color = PositiveRed, fontSize = 25.sp, fontWeight = FontWeight.ExtraBold)
+                Spacer(modifier = Modifier.height(10.dp))
+                Text("자정 이후 다시 진입할 수 있습니다.", color = TextSecondary, fontSize = 14.sp)
+            } else {
+                Text(
+                    if (waitFinished) "대기 완료" else formatProtectionCountdown(remainingMillis),
+                    color = if (waitFinished) FourAssetSchdColor else TextPrimary,
+                    fontSize = 42.sp,
+                    fontWeight = FontWeight.ExtraBold
+                )
+                Spacer(modifier = Modifier.height(8.dp))
+                Text(
+                    if (waitFinished) "진입 조건을 완료해 주세요." else "이 화면을 유지하는 동안 대기 시간이 진행됩니다.",
+                    color = TextSecondary,
+                    fontSize = 13.sp,
+                    textAlign = TextAlign.Center
+                )
+                Spacer(modifier = Modifier.height(28.dp))
+
+                when (settings.mode) {
+                    ProtectionMode.WEAK -> ProtectionUnlockButton(
+                        text = "앱 열기",
+                        enabled = waitFinished,
+                        onClick = onUnlock
+                    )
+                    ProtectionMode.MEDIUM -> {
+                        OutlinedTextField(
+                            value = enteredPrinciple,
+                            onValueChange = {
+                                enteredPrinciple = it.take(200)
+                                principleMismatch = false
+                            },
+                            enabled = waitFinished,
+                            placeholder = { Text("투자 원칙 문장 직접 입력") },
+                            minLines = 2,
+                            maxLines = 4,
+                            colors = appTextFieldColors(),
+                            shape = RoundedCornerShape(8.dp),
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                        if (principleMismatch) {
+                            Spacer(modifier = Modifier.height(7.dp))
+                            Text("저장한 투자 원칙 문장과 일치하지 않습니다.", color = PositiveRed, fontSize = 12.sp)
+                        }
+                        Spacer(modifier = Modifier.height(12.dp))
+                        ProtectionUnlockButton(
+                            text = "문장 확인",
+                            enabled = waitFinished && enteredPrinciple.trim().isNotEmpty(),
+                            onClick = {
+                                if (enteredPrinciple.trim() == settings.investmentPrinciple.trim()) onUnlock()
+                                else principleMismatch = true
+                            }
+                        )
+                    }
+                    ProtectionMode.STRONG -> ProtectionUnlockButton(
+                        text = "QR 코드 스캔",
+                        enabled = waitFinished && settings.hasQr,
+                        onClick = onRequestQrUnlock
+                    )
+                    ProtectionMode.NORMAL -> Unit
+                }
+            }
+
+            Spacer(modifier = Modifier.height(22.dp))
+            Button(
+                onClick = onOpenSimulator,
+                shape = RoundedCornerShape(8.dp),
+                colors = ButtonDefaults.buttonColors(containerColor = SoftSurface, contentColor = TextPrimary),
+                modifier = Modifier.fillMaxWidth().height(52.dp)
+            ) {
+                Text("시뮬레이터 열기", fontSize = 15.sp, fontWeight = FontWeight.ExtraBold)
+            }
+            Spacer(modifier = Modifier.height(10.dp))
+            Text("잠금 해제 없이 시뮬레이터만 사용할 수 있습니다.", color = TextSecondary, fontSize = 12.sp)
+            Spacer(modifier = Modifier.height(22.dp))
+            Text(
+                "오늘 ${dailyUsage.entryCount}/${settings.mode.dailyEntryLimit}회 사용 · ${remainingEntries}회 남음",
+                color = TextSecondary,
+                fontSize = 13.sp,
+                fontWeight = FontWeight.Bold
+            )
+        }
+    }
+}
+
+@Composable
+private fun ProtectionUnlockButton(text: String, enabled: Boolean, onClick: () -> Unit) {
+    Button(
+        onClick = onClick,
+        enabled = enabled,
+        shape = RoundedCornerShape(8.dp),
+        colors = ButtonDefaults.buttonColors(
+            containerColor = TextPrimary,
+            contentColor = PanelColor,
+            disabledContainerColor = SoftSurface,
+            disabledContentColor = MutedText
+        ),
+        modifier = Modifier.fillMaxWidth().height(54.dp)
+    ) {
+        Text(text, fontSize = 16.sp, fontWeight = FontWeight.ExtraBold)
     }
 }
 
@@ -4970,7 +5626,9 @@ private fun DisplayModeSettingsScreen(
     onBack: () -> Unit,
     onSelect: (String) -> Unit
 ) {
-    ScreenColumn {
+    val headerTopPadding = WindowInsets.statusBars.asPaddingValues().calculateTopPadding() + 12.dp
+    ScreenColumn(topPadding = 0) {
+        Spacer(modifier = Modifier.height(headerTopPadding))
         PlainTopBar(title = "화면 모드 설정", onBack = onBack, rightText = "", onRightClick = {})
         Spacer(modifier = Modifier.height(110.dp))
         Row(
@@ -5010,22 +5668,24 @@ private fun DisplayModeOption(
 private fun DisplayModePreview(mode: String) {
     val dark = mode == DisplayMode.DARK
     val system = mode == DisplayMode.SYSTEM
+    val previewDark = Color(0xFF111315)
+    val previewLight = Color.White
     Box(
         modifier = Modifier
             .width(86.dp)
             .height(136.dp)
             .clip(RoundedCornerShape(14.dp))
-            .background(if (dark) TextPrimary else Color.White),
+            .background(if (dark) previewDark else previewLight),
         contentAlignment = Alignment.Center
     ) {
         Canvas(modifier = Modifier.fillMaxSize()) {
             if (system) {
-                drawRect(Color.White, size = androidx.compose.ui.geometry.Size(size.width, size.height / 2))
-                drawRect(TextPrimary, topLeft = Offset(0f, size.height / 2), size = androidx.compose.ui.geometry.Size(size.width, size.height / 2))
-                drawCircle(TextPrimary, radius = 20f, center = Offset(size.width / 2, size.height / 2))
-                drawCircle(Color.White, radius = 11f, center = Offset(size.width / 2, size.height / 2))
+                drawRect(previewLight, size = androidx.compose.ui.geometry.Size(size.width, size.height / 2))
+                drawRect(previewDark, topLeft = Offset(0f, size.height / 2), size = androidx.compose.ui.geometry.Size(size.width, size.height / 2))
+                drawCircle(previewDark, radius = 20f, center = Offset(size.width / 2, size.height / 2))
+                drawCircle(previewLight, radius = 11f, center = Offset(size.width / 2, size.height / 2))
             } else {
-                val muted = if (dark) Color(0xFF2F333A) else SoftSurface
+                val muted = if (dark) Color(0xFF2F333A) else Color(0xFFE8EAEE)
                 repeat(5) { index ->
                     val y = 32f + index * 20f
                     drawCircle(muted, radius = 5f, center = Offset(18f, y))
@@ -5142,23 +5802,6 @@ private fun SettingsStaticRow(title: String, value: String) {
     Row(modifier = Modifier.fillMaxWidth().padding(vertical = 17.dp), verticalAlignment = Alignment.CenterVertically) {
         Text(title, color = TextPrimary, fontSize = 22.sp, fontWeight = FontWeight.ExtraBold, modifier = Modifier.weight(1f))
         Text(value, color = TextSecondary, fontSize = 19.sp, fontWeight = FontWeight.Bold)
-    }
-}
-
-@Composable
-private fun SettingsToggleRow(title: String, checked: Boolean) {
-    Row(modifier = Modifier.fillMaxWidth().padding(vertical = 17.dp), verticalAlignment = Alignment.CenterVertically) {
-        Text(title, color = TextPrimary, fontSize = 22.sp, fontWeight = FontWeight.ExtraBold, modifier = Modifier.weight(1f))
-        Box(
-            modifier = Modifier
-                .width(54.dp)
-                .height(32.dp)
-                .clip(RoundedCornerShape(18.dp))
-                .background(if (checked) TextPrimary else Color(0xFFD2DAE2)),
-            contentAlignment = if (checked) Alignment.CenterEnd else Alignment.CenterStart
-        ) {
-            Box(modifier = Modifier.padding(horizontal = 3.dp).size(26.dp).clip(CircleShape).background(Color.White))
-        }
     }
 }
 
@@ -5873,41 +6516,1362 @@ private fun ExchangeRateInputRow(label: String, value: String, onValueChange: (S
 
 @Composable
 private fun BacktestToolSwitcher(selected: String, onSelect: (String) -> Unit) {
-    Row(
-        modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.spacedBy(10.dp)
-    ) {
-        listOf("백테스트", "배당", "자가배당", "4자산 분배").forEach { label ->
-            val active = selected == label
-            Box(
-                modifier = Modifier
-                    .weight(1f)
-                    .clip(RoundedCornerShape(999.dp))
-                    .background(if (active) TextPrimary else SoftSurface)
-                    .clickable { onSelect(label) }
-                    .padding(vertical = 13.dp),
-                contentAlignment = Alignment.Center
+    Column(modifier = Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        listOf(
+            listOf("백테스트", "배당", "자가배당"),
+            listOf("3자산 분배", "시나리오 비교", "은퇴 성공확률")
+        ).forEach { rowLabels ->
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                Text(
-                    label,
-                    color = if (active) PanelColor else TextPrimary,
-                    fontSize = 15.sp,
-                    fontWeight = FontWeight.ExtraBold
-                )
+                rowLabels.forEach { label ->
+                    val active = selected == label
+                    val toolColor = simulatorToolColor(label)
+                    val inactiveAlpha = if (PanelColor == Color.White) 0.11f else 0.22f
+                    Box(
+                        modifier = Modifier
+                            .weight(1f)
+                            .clip(RoundedCornerShape(999.dp))
+                            .background(if (active) toolColor else toolColor.copy(alpha = inactiveAlpha))
+                            .clickable { onSelect(label) }
+                            .padding(vertical = 11.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text(
+                            label,
+                            color = if (active) Color.White else toolColor,
+                            fontSize = if (label == "은퇴 성공확률") 12.sp else 14.sp,
+                            fontWeight = FontWeight.ExtraBold
+                        )
+                    }
+                }
             }
         }
     }
 }
 
-@OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
+private fun simulatorToolColor(label: String): Color = when (label) {
+    "백테스트" -> SimulatorBacktestColor
+    "배당", "자가배당", "3자산 분배" -> SimulatorCashFlowColor
+    else -> SimulatorAnalysisColor
+}
+
 @Composable
-private fun BacktestScreen(accounts: List<AccountUi>, settings: AppSettings, usdKrw: Double) {
+private fun SimulationPresetSaveDialog(
+    title: String,
+    name: String,
+    existingNames: List<String>,
+    onNameChange: (String) -> Unit,
+    onDismiss: () -> Unit,
+    onSaveNew: (String) -> Unit,
+    onOverwrite: (String) -> Unit
+) {
+    var overwriteName by remember { mutableStateOf<String?>(null) }
+    if (overwriteName == null) AlertDialog(
+        onDismissRequest = onDismiss,
+        containerColor = PanelColor,
+        title = { Text(title, color = TextPrimary, fontWeight = FontWeight.ExtraBold) },
+        text = {
+            Column(modifier = Modifier.fillMaxWidth()) {
+                OutlinedTextField(
+                    value = name,
+                    onValueChange = onNameChange,
+                    label = { Text("저장 이름") },
+                    singleLine = true,
+                    colors = appTextFieldColors(),
+                    modifier = Modifier.fillMaxWidth()
+                )
+                if (existingNames.isNotEmpty()) {
+                    Spacer(modifier = Modifier.height(16.dp))
+                    Text("기존 저장 목록", color = TextSecondary, fontSize = 12.sp, fontWeight = FontWeight.ExtraBold)
+                    Spacer(modifier = Modifier.height(7.dp))
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .heightIn(max = 220.dp)
+                            .verticalScroll(rememberScrollState()),
+                        verticalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        existingNames.forEach { existingName ->
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clip(RoundedCornerShape(10.dp))
+                                    .background(SoftSurface)
+                                    .clickable { overwriteName = existingName }
+                                    .padding(horizontal = 12.dp, vertical = 11.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text(
+                                    existingName,
+                                    color = TextPrimary,
+                                    fontSize = 14.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    modifier = Modifier.weight(1f),
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                                Text("업데이트", color = BrandGreen, fontSize = 12.sp, fontWeight = FontWeight.ExtraBold)
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(
+                enabled = name.isNotBlank(),
+                onClick = {
+                    val trimmed = name.trim()
+                    if (existingNames.contains(trimmed)) overwriteName = trimmed else onSaveNew(trimmed)
+                }
+            ) {
+                Text("저장", color = if (name.isNotBlank()) BrandGreen else MutedText, fontWeight = FontWeight.Bold)
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("취소", color = TextSecondary) }
+        }
+    )
+
+    overwriteName?.let { existingName ->
+        AlertDialog(
+            onDismissRequest = { overwriteName = null },
+            containerColor = PanelColor,
+            title = { Text("저장 항목 업데이트", color = TextPrimary, fontWeight = FontWeight.ExtraBold) },
+            text = { Text("$existingName 항목을 현재 조건과 결과로 업데이트할까요?", color = TextSecondary) },
+            confirmButton = {
+                TextButton(onClick = {
+                    overwriteName = null
+                    onOverwrite(existingName)
+                }) { Text("업데이트", color = BrandGreen, fontWeight = FontWeight.Bold) }
+            },
+            dismissButton = {
+                TextButton(onClick = { overwriteName = null }) { Text("취소", color = TextSecondary) }
+            }
+        )
+    }
+}
+
+@Composable
+private fun SimulationPresetRenameDialog(
+    currentName: String,
+    existingNames: List<String>,
+    onDismiss: () -> Unit,
+    onRename: (String) -> Unit,
+    onDelete: () -> Unit
+) {
+    var renamedText by remember(currentName) { mutableStateOf(currentName) }
+    val trimmed = renamedText.trim()
+    val duplicate = existingNames.any { it != currentName && it == trimmed }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        containerColor = PanelColor,
+        title = { Text("저장 이름 수정", color = TextPrimary, fontWeight = FontWeight.ExtraBold) },
+        text = {
+            Column(modifier = Modifier.fillMaxWidth()) {
+                OutlinedTextField(
+                    value = renamedText,
+                    onValueChange = { renamedText = it },
+                    label = { Text("저장 이름") },
+                    singleLine = true,
+                    isError = duplicate,
+                    supportingText = {
+                        if (duplicate) Text("같은 이름의 저장 항목이 있습니다.", color = PositiveRed)
+                    },
+                    colors = appTextFieldColors(),
+                    modifier = Modifier.fillMaxWidth()
+                )
+                TextButton(onClick = onDelete) {
+                    Text("저장 항목 삭제", color = PositiveRed, fontWeight = FontWeight.Bold)
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(
+                enabled = trimmed.isNotEmpty() && !duplicate,
+                onClick = { onRename(trimmed) }
+            ) {
+                Text(
+                    "수정",
+                    color = if (trimmed.isNotEmpty() && !duplicate) BrandGreen else MutedText,
+                    fontWeight = FontWeight.Bold
+                )
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("취소", color = TextSecondary) }
+        }
+    )
+}
+
+private fun scenarioComparisonTypeLabel(type: ScenarioComparisonType): String = when (type) {
+    ScenarioComparisonType.DIVIDEND -> "배당"
+    ScenarioComparisonType.SELF_DIVIDEND -> "자가배당"
+    ScenarioComparisonType.THREE_ASSET -> "3자산 분배"
+}
+
+private fun scenarioComparisonTypeCashFlowLabel(type: ScenarioComparisonType): String = when (type) {
+    ScenarioComparisonType.DIVIDEND -> "세후 월배당"
+    ScenarioComparisonType.SELF_DIVIDEND -> "세후 월인출"
+    ScenarioComparisonType.THREE_ASSET -> "월 생활비"
+}
+
+private fun scenarioComparisonColor(index: Int): Color = listOf(
+    BrandGreen,
+    PositiveRed,
+    FourAssetSchdColor,
+    PsuOrange,
+    NasdaqBlue,
+    FourAssetQldColor
+)[index.mod(6)]
+
+private fun scenarioComparisonCandidates(context: Context): List<ScenarioComparisonCandidate> {
+    if (savedDividendSimulationPresetsCache.isEmpty()) {
+        savedDividendSimulationPresetsCache.addAll(loadSavedDividendPresets(context))
+    }
+    if (savedSelfDividendPresetsCache.isEmpty()) {
+        savedSelfDividendPresetsCache.addAll(loadSavedSelfDividendPresets(context))
+    }
+    if (savedFourAssetDistributionPresetsCache.isEmpty()) {
+        savedFourAssetDistributionPresetsCache.addAll(loadSavedFourAssetDistributionPresets(context))
+    }
+
+    val candidates = mutableListOf<ScenarioComparisonCandidate>()
+    savedDividendSimulationPresetsCache.forEach { preset ->
+        val id = "dividend:${preset.name}"
+        val series = preset.projectionRows.takeIf { it.isNotEmpty() }?.let { rows ->
+            ScenarioComparisonSeries(
+                id = id,
+                name = preset.name,
+                type = ScenarioComparisonType.DIVIDEND,
+                points = rows.map { row ->
+                    ScenarioComparisonPoint(row.year, row.monthlyDividend, row.totalAsset)
+                }
+            )
+        }
+        candidates += ScenarioComparisonCandidate(
+            id = id,
+            name = preset.name,
+            type = ScenarioComparisonType.DIVIDEND,
+            series = series,
+            historicalAllocations = listOf(HistoricalAssetAllocation(preset.ticker, 1.0))
+        )
+    }
+    savedSelfDividendPresetsCache.forEach { preset ->
+        val id = "self_dividend:${preset.name}"
+        val series = preset.result.takeIf { it.isNotEmpty() }?.let { rows ->
+            ScenarioComparisonSeries(
+                id = id,
+                name = preset.name,
+                type = ScenarioComparisonType.SELF_DIVIDEND,
+                points = rows.map { row ->
+                    ScenarioComparisonPoint(row.year, row.monthlyTakeHome, row.totalAsset)
+                }
+            )
+        }
+        candidates += ScenarioComparisonCandidate(
+            id = id,
+            name = preset.name,
+            type = ScenarioComparisonType.SELF_DIVIDEND,
+            series = series,
+            historicalAllocations = preset.assets.mapNotNull { asset ->
+                digitsToLong(asset.investmentAmount).takeIf { it > 0L }?.let { amount ->
+                    HistoricalAssetAllocation(asset.ticker, amount.toDouble())
+                }
+            }
+        )
+    }
+    savedFourAssetDistributionPresetsCache.forEach { preset ->
+        val id = "three_asset:${preset.name}"
+        val rows = calculateFourAssetRetirement(fourAssetRetirementInput(preset)).rows
+        val series = rows.takeIf { it.isNotEmpty() }?.let {
+            ScenarioComparisonSeries(
+                id = id,
+                name = preset.name,
+                type = ScenarioComparisonType.THREE_ASSET,
+                points = it.map { row ->
+                    ScenarioComparisonPoint(
+                        year = row.year,
+                        monthlyCashFlowWon = row.actualAnnualCashFlowWon / 12L,
+                        totalAssetWon = row.totalAssetWon
+                    )
+                }
+            )
+        }
+        candidates += ScenarioComparisonCandidate(
+            id = id,
+            name = preset.name,
+            type = ScenarioComparisonType.THREE_ASSET,
+            series = series,
+            historicalAllocations = listOf(
+                HistoricalAssetAllocation("SCHD", preset.appliedSchdRatio),
+                HistoricalAssetAllocation("JEPQ", preset.appliedJepqRatio),
+                HistoricalAssetAllocation("QLD", preset.appliedQldRatio)
+            )
+        )
+    }
+    return candidates
+}
+
+@Composable
+private fun ScenarioComparisonContent() {
+    val context = LocalContext.current
+    val candidates = remember(context) { scenarioComparisonCandidates(context) }
+    val availableCandidates = candidates.filter { it.series != null }
+    val selectedIds = remember(candidates) {
+        val availableIds = availableCandidates.map { it.id }.toSet()
+        val restored = loadScenarioComparisonSelection(context).filter { it in availableIds }
+        mutableStateListOf<String>().also { selected ->
+            selected.addAll((restored.ifEmpty { availableCandidates.take(2).map { it.id } }).take(4))
+        }
+    }
+    var metricIndex by remember(context) { mutableIntStateOf(loadScenarioComparisonMetric(context)) }
+    val selectedCandidates = candidates.filter { it.id in selectedIds && it.series != null }
+    val selectedSeries = selectedCandidates.mapNotNull { it.series }
+
+    fun toggleCandidate(candidate: ScenarioComparisonCandidate) {
+        if (candidate.series == null) return
+        if (candidate.id in selectedIds) {
+            selectedIds.remove(candidate.id)
+        } else if (selectedIds.size >= 4) {
+            Toast.makeText(context, "비교 시나리오는 최대 4개까지 선택할 수 있어요.", Toast.LENGTH_SHORT).show()
+            return
+        } else {
+            selectedIds.add(candidate.id)
+        }
+        saveScenarioComparisonSelection(context, selectedIds.toSet())
+    }
+
+    BacktestCard {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            SectionTitle("비교 시나리오")
+            Spacer(modifier = Modifier.weight(1f))
+            Text("${selectedIds.size}/4 선택", color = BrandGreen, fontSize = 13.sp, fontWeight = FontWeight.ExtraBold)
+        }
+        Spacer(modifier = Modifier.height(8.dp))
+        Text(
+            "저장된 배당·자가배당·3자산 분배 결과 중 2개 이상을 선택하세요.",
+            color = TextSecondary,
+            fontSize = 13.sp,
+            lineHeight = 19.sp
+        )
+        Spacer(modifier = Modifier.height(14.dp))
+        if (candidates.isEmpty()) {
+            Text("비교할 저장 시나리오가 없습니다.", color = MutedText, fontSize = 14.sp)
+        } else {
+            ScenarioComparisonType.entries.forEach { type ->
+                val typedCandidates = candidates.filter { it.type == type }
+                if (typedCandidates.isNotEmpty()) {
+                    Text(
+                        scenarioComparisonTypeLabel(type),
+                        color = TextSecondary,
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.ExtraBold,
+                        modifier = Modifier.padding(top = 8.dp, bottom = 4.dp)
+                    )
+                    typedCandidates.forEach { candidate ->
+                        val selected = candidate.id in selectedIds
+                        val candidateIndex = candidates.indexOf(candidate)
+                        val selectedIndex = selectedCandidates.indexOfFirst { it.id == candidate.id }
+                        val colorIndex = if (selectedIndex >= 0) selectedIndex else candidateIndex
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(8.dp))
+                                .background(if (selected) BrandSoftBlue.copy(alpha = 0.22f) else Color.Transparent)
+                                .clickable(enabled = candidate.series != null) { toggleCandidate(candidate) }
+                                .padding(horizontal = 10.dp, vertical = 10.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .size(10.dp)
+                                    .clip(CircleShape)
+                                    .background(
+                                        if (candidate.series == null) MutedText
+                                        else scenarioComparisonColor(colorIndex)
+                                    )
+                            )
+                            Spacer(modifier = Modifier.width(9.dp))
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    candidate.name,
+                                    color = if (candidate.series == null) MutedText else TextPrimary,
+                                    fontSize = 14.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                                Text(
+                                    if (candidate.series == null) "계산 결과 없음" else scenarioComparisonTypeCashFlowLabel(type),
+                                    color = TextSecondary,
+                                    fontSize = 11.sp,
+                                    fontWeight = FontWeight.Bold
+                                )
+                            }
+                            if (selected) {
+                                Text("선택", color = BrandGreen, fontSize = 12.sp, fontWeight = FontWeight.ExtraBold)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    Spacer(modifier = Modifier.height(14.dp))
+    if (selectedSeries.size < 2) {
+        BacktestCard {
+            Text("비교할 시나리오를 2개 이상 선택해 주세요.", color = TextSecondary, fontSize = 14.sp)
+        }
+        return
+    }
+
+    ScenarioComparisonSummaryCard(selectedSeries)
+    Spacer(modifier = Modifier.height(14.dp))
+    BacktestCard {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            SectionTitle("연차별 비교")
+            Spacer(modifier = Modifier.weight(1f))
+            Text("20년", color = TextSecondary, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+        }
+        Spacer(modifier = Modifier.height(12.dp))
+        SegmentedLabels(
+            labels = listOf("월 현금흐름", "총 자산"),
+            selectedIndex = metricIndex,
+            onSelect = {
+                metricIndex = it
+                saveScenarioComparisonMetric(context, it)
+            }
+        )
+        Spacer(modifier = Modifier.height(14.dp))
+        ScenarioComparisonChart(selectedSeries, metricIndex)
+    }
+    Spacer(modifier = Modifier.height(14.dp))
+    ScenarioComparisonTable(selectedSeries, metricIndex)
+}
+
+@Composable
+private fun ScenarioComparisonSummaryCard(
+    series: List<ScenarioComparisonSeries>
+) {
+    val summaries = series.mapNotNull { scenario ->
+        ScenarioComparisonEngine.summarize(scenario)?.let { scenario to it }
+    }
+    BacktestCard {
+        SectionTitle("핵심 비교")
+        Spacer(modifier = Modifier.height(4.dp))
+        summaries.forEachIndexed { index, (scenario, summary) ->
+            val candidateIndex = series.indexOfFirst { it.id == scenario.id }.coerceAtLeast(0)
+            if (index > 0) {
+                Spacer(modifier = Modifier.height(14.dp))
+                Box(modifier = Modifier.fillMaxWidth().height(1.dp).background(LineColor))
+                Spacer(modifier = Modifier.height(14.dp))
+            }
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Box(modifier = Modifier.size(10.dp).clip(CircleShape).background(scenarioComparisonColor(candidateIndex)))
+                Spacer(modifier = Modifier.width(8.dp))
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(scenario.name, color = TextPrimary, fontSize = 16.sp, fontWeight = FontWeight.ExtraBold)
+                    Text(
+                        scenarioComparisonTypeLabel(scenario.type),
+                        color = TextSecondary,
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+                Text(formatEokWon(summary.finalAssetWon), color = TextPrimary, fontSize = 15.sp, fontWeight = FontWeight.ExtraBold)
+            }
+            Spacer(modifier = Modifier.height(11.dp))
+            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                ScenarioComparisonMetric("1년 월", formatWon(summary.yearOneMonthlyCashFlowWon), Modifier.weight(1f))
+                ScenarioComparisonMetric("10년 월", formatWon(summary.yearTenMonthlyCashFlowWon), Modifier.weight(1f))
+                ScenarioComparisonMetric("20년 월", formatWon(summary.yearTwentyMonthlyCashFlowWon), Modifier.weight(1f))
+            }
+            Spacer(modifier = Modifier.height(8.dp))
+            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                ScenarioComparisonMetric("20년 최종 자산", formatWon(summary.finalAssetWon), Modifier.weight(1f))
+                ScenarioComparisonMetric("20년 누적 현금흐름", formatWon(summary.cumulativeCashFlowWon), Modifier.weight(1f))
+            }
+        }
+    }
+}
+
+@Composable
+private fun ScenarioComparisonMetric(label: String, value: String, modifier: Modifier = Modifier) {
+    Column(modifier = modifier) {
+        Text(label, color = TextSecondary, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+        Spacer(modifier = Modifier.height(3.dp))
+        Text(
+            value,
+            color = TextPrimary,
+            fontSize = 13.sp,
+            fontWeight = FontWeight.ExtraBold,
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis
+        )
+    }
+}
+
+@Composable
+private fun ScenarioComparisonChart(
+    series: List<ScenarioComparisonSeries>,
+    metricIndex: Int
+) {
+    val years = series.flatMap { it.points }.map { it.year }.distinct().sorted()
+    if (years.isEmpty()) return
+    var selectedYear by remember(series.map { it.id }, metricIndex) { mutableIntStateOf(years.last()) }
+    val maxValue = series.flatMap { scenario ->
+        scenario.points.map { point ->
+            if (metricIndex == 0) point.monthlyCashFlowWon else point.totalAssetWon
+        }
+    }.maxOrNull()?.coerceAtLeast(1L) ?: 1L
+
+    Column(modifier = Modifier.fillMaxWidth()) {
+        Canvas(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(250.dp)
+                .clipToBounds()
+                .pointerInput(years, metricIndex) {
+                    detectTapGestures { offset ->
+                        selectedYear = scenarioComparisonYearForOffset(offset.x, size.width.toFloat(), years)
+                    }
+                }
+        ) {
+            val left = 68f
+            val right = size.width - 10f
+            val top = 16f
+            val bottom = size.height - 34f
+            val chartWidth = (right - left).coerceAtLeast(1f)
+            val chartHeight = (bottom - top).coerceAtLeast(1f)
+            val labelPaint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
+                color = TextSecondary.toArgb()
+                textSize = 18f
+                textAlign = android.graphics.Paint.Align.RIGHT
+            }
+            val yearPaint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
+                color = TextSecondary.toArgb()
+                textSize = 18f
+                textAlign = android.graphics.Paint.Align.CENTER
+            }
+
+            repeat(4) { index ->
+                val ratio = index / 3f
+                val y = top + chartHeight * ratio
+                val value = (maxValue * (1f - ratio)).roundToLong()
+                drawLine(LineColor, Offset(left, y), Offset(right, y), strokeWidth = 1.2f)
+                drawContext.canvas.nativeCanvas.drawText(compactWonAxis(value), left - 8f, y + 6f, labelPaint)
+            }
+
+            val yearRange = (years.last() - years.first()).coerceAtLeast(1)
+            series.forEachIndexed { seriesIndex, scenario ->
+                val path = Path()
+                scenario.points.sortedBy { it.year }.forEachIndexed { index, point ->
+                    val x = left + chartWidth * (point.year - years.first()).toFloat() / yearRange.toFloat()
+                    val value = if (metricIndex == 0) point.monthlyCashFlowWon else point.totalAssetWon
+                    val y = bottom - chartHeight * value.toFloat() / maxValue.toFloat()
+                    if (index == 0) path.moveTo(x, y) else path.lineTo(x, y)
+                }
+                drawPath(
+                    path,
+                    scenarioComparisonColor(seriesIndex),
+                    style = androidx.compose.ui.graphics.drawscope.Stroke(width = 4f, cap = StrokeCap.Round)
+                )
+            }
+
+            listOf(years.first(), years.getOrElse(9) { years.last() }, years.last()).distinct().forEach { year ->
+                val x = left + chartWidth * (year - years.first()).toFloat() / yearRange.toFloat()
+                drawContext.canvas.nativeCanvas.drawText("${year}년", x, bottom + 25f, yearPaint)
+            }
+
+            val selectedX = left + chartWidth * (selectedYear - years.first()).toFloat() / yearRange.toFloat()
+            drawLine(TextPrimary.copy(alpha = 0.45f), Offset(selectedX, top), Offset(selectedX, bottom), strokeWidth = 2f)
+            series.forEachIndexed { seriesIndex, scenario ->
+                ScenarioComparisonEngine.pointAt(scenario, selectedYear)?.let { point ->
+                    val value = if (metricIndex == 0) point.monthlyCashFlowWon else point.totalAssetWon
+                    val y = bottom - chartHeight * value.toFloat() / maxValue.toFloat()
+                    drawCircle(PanelColor, radius = 7f, center = Offset(selectedX, y))
+                    drawCircle(scenarioComparisonColor(seriesIndex), radius = 5f, center = Offset(selectedX, y))
+                }
+            }
+        }
+        Spacer(modifier = Modifier.height(8.dp))
+        Text("${selectedYear}년차", color = TextSecondary, fontSize = 12.sp, fontWeight = FontWeight.ExtraBold)
+        Spacer(modifier = Modifier.height(5.dp))
+        series.forEach { scenario ->
+            val point = ScenarioComparisonEngine.pointAt(scenario, selectedYear) ?: return@forEach
+            val candidateIndex = series.indexOfFirst { it.id == scenario.id }.coerceAtLeast(0)
+            val value = if (metricIndex == 0) point.monthlyCashFlowWon else point.totalAssetWon
+            Row(modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                Box(modifier = Modifier.size(9.dp).clip(CircleShape).background(scenarioComparisonColor(candidateIndex)))
+                Spacer(modifier = Modifier.width(7.dp))
+                Text(scenario.name, color = TextPrimary, fontSize = 12.sp, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Text(formatWon(value), color = TextPrimary, fontSize = 13.sp, fontWeight = FontWeight.ExtraBold)
+            }
+        }
+    }
+}
+
+private fun scenarioComparisonYearForOffset(x: Float, width: Float, years: List<Int>): Int {
+    if (years.size <= 1) return years.firstOrNull() ?: 1
+    val left = 68f
+    val right = (width - 10f).coerceAtLeast(left + 1f)
+    val ratio = ((x - left) / (right - left)).coerceIn(0f, 1f)
+    val index = (ratio * (years.size - 1)).roundToInt().coerceIn(years.indices)
+    return years[index]
+}
+
+private fun compactWonAxis(value: Long): String =
+    if (DisplayCurrency == CurrencyMode.USD) {
+        CurrencyDisplayFormatter.formatCompact(value, DisplayUsdKrw, true)
+    } else {
+        when {
+            value >= 1_000_000L -> "${formatDecimal(value / 100_000_000.0)}억"
+            value >= 10_000L -> "${(value / 10_000.0).roundToInt()}만"
+            else -> NumberFormat.getNumberInstance(Locale.KOREA).format(value)
+        }
+    }
+
+@Composable
+private fun ScenarioComparisonTable(series: List<ScenarioComparisonSeries>, metricIndex: Int) {
+    val years = series.flatMap { it.points }.map { it.year }.distinct().sorted()
+    BacktestCard {
+        SectionTitle(if (metricIndex == 0) "연차별 월 현금흐름" else "연차별 총 자산")
+        Spacer(modifier = Modifier.height(10.dp))
+        Column(modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState())) {
+            val tableWidth = (58 + series.size * 132).dp
+            Row(
+                modifier = Modifier
+                    .width(tableWidth)
+                    .clip(RoundedCornerShape(8.dp))
+                    .background(SoftSurface)
+                    .padding(vertical = 9.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text("연차", color = TextSecondary, fontSize = 12.sp, fontWeight = FontWeight.Bold, modifier = Modifier.width(58.dp), textAlign = TextAlign.Center)
+                series.forEach { scenario ->
+                    Text(
+                        scenario.name,
+                        color = TextSecondary,
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.ExtraBold,
+                        modifier = Modifier.width(132.dp).padding(horizontal = 6.dp),
+                        textAlign = TextAlign.End,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+            }
+            years.forEach { year ->
+                Row(
+                    modifier = Modifier.width(tableWidth).padding(vertical = 10.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text("${year}년", color = TextPrimary, fontSize = 12.sp, fontWeight = FontWeight.ExtraBold, modifier = Modifier.width(58.dp), textAlign = TextAlign.Center)
+                    series.forEach { scenario ->
+                        val point = ScenarioComparisonEngine.pointAt(scenario, year)
+                        val value = point?.let { if (metricIndex == 0) it.monthlyCashFlowWon else it.totalAssetWon }
+                        Text(
+                            value?.let(::formatWon) ?: "-",
+                            color = TextPrimary,
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.Bold,
+                            modifier = Modifier.width(132.dp).padding(horizontal = 6.dp),
+                            textAlign = TextAlign.End,
+                            maxLines = 1
+                        )
+                    }
+                }
+                Box(modifier = Modifier.width(tableWidth).height(1.dp).background(LineColor))
+            }
+        }
+    }
+}
+
+@Composable
+private fun RetirementSuccessContent() {
+    val context = LocalContext.current
+    val candidates = remember(context) { scenarioComparisonCandidates(context) }
+    val availableCandidates = candidates.filter { it.series != null }
+    val selectedIds = remember(candidates) {
+        val availableIds = availableCandidates.map { it.id }.toSet()
+        val restored = loadRetirementSuccessSelection(context).filter { it in availableIds }
+        mutableStateListOf<String>().also { selected ->
+            selected.addAll((restored.ifEmpty { availableCandidates.take(1).map { it.id } }).take(4))
+        }
+    }
+    val selectedCandidates = candidates.filter { it.id in selectedIds && it.series != null }
+    val selectedSeries = selectedCandidates.mapNotNull { it.series }
+    var analyses by remember { mutableStateOf<List<RetirementScenarioSuccessAnalysis>>(emptyList()) }
+    var volatilityFailures by remember { mutableStateOf<List<RetirementVolatilityFailure>>(emptyList()) }
+    var isCalculating by remember { mutableStateOf(false) }
+
+    LaunchedEffect(selectedSeries.map { it.id }) {
+        if (selectedSeries.isEmpty()) {
+            analyses = emptyList()
+            volatilityFailures = emptyList()
+            isCalculating = false
+        } else {
+            isCalculating = true
+            val calculationResults = withContext(Dispatchers.IO) {
+                selectedCandidates.map { candidate ->
+                    val volatility = loadHistoricalVolatility(context, candidate)
+                    candidate to volatility?.let { estimate ->
+                        RetirementScenarioSuccessEngine.calculate(
+                            series = candidate.series!!,
+                            historicalVolatility = estimate
+                        )
+                    }
+                }
+            }
+            analyses = calculationResults.mapNotNull { it.second }
+            volatilityFailures = calculationResults.mapNotNull { (candidate, analysis) ->
+                if (analysis != null) null else RetirementVolatilityFailure(
+                    scenarioId = candidate.id,
+                    scenarioName = candidate.name,
+                    tickers = candidate.historicalAllocations.map { it.ticker }.filter { it.isNotBlank() }.distinct()
+                )
+            }
+            isCalculating = false
+        }
+    }
+
+    fun toggleCandidate(candidate: ScenarioComparisonCandidate) {
+        if (candidate.series == null) return
+        if (candidate.id in selectedIds) {
+            selectedIds.remove(candidate.id)
+        } else if (selectedIds.size >= 4) {
+            Toast.makeText(context, "은퇴 시나리오는 최대 4개까지 선택할 수 있어요.", Toast.LENGTH_SHORT).show()
+            return
+        } else {
+            selectedIds.add(candidate.id)
+        }
+        saveRetirementSuccessSelection(context, selectedIds.toSet())
+    }
+
+    BacktestCard {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            SectionTitle("은퇴 시나리오")
+            Spacer(modifier = Modifier.weight(1f))
+            Text("${selectedIds.size}/4 선택", color = BrandGreen, fontSize = 13.sp, fontWeight = FontWeight.ExtraBold)
+        }
+        Spacer(modifier = Modifier.height(8.dp))
+        Text(
+            "저장된 배당·자가배당·3자산 분배 결과를 선택하면 5,000개 경로를 자동 계산합니다.",
+            color = TextSecondary,
+            fontSize = 13.sp,
+            lineHeight = 19.sp
+        )
+        Spacer(modifier = Modifier.height(12.dp))
+        if (candidates.isEmpty()) {
+            Text("계산할 저장 시나리오가 없습니다.", color = MutedText, fontSize = 14.sp)
+        } else {
+            ScenarioComparisonType.entries.forEach { type ->
+                val typedCandidates = candidates.filter { it.type == type }
+                if (typedCandidates.isNotEmpty()) {
+                    Text(
+                        scenarioComparisonTypeLabel(type),
+                        color = TextSecondary,
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.ExtraBold,
+                        modifier = Modifier.padding(top = 8.dp, bottom = 4.dp)
+                    )
+                    typedCandidates.forEach { candidate ->
+                        val selected = candidate.id in selectedIds
+                        val selectedIndex = selectedCandidates.indexOfFirst { it.id == candidate.id }
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(8.dp))
+                                .background(if (selected) BrandSoftBlue.copy(alpha = 0.22f) else Color.Transparent)
+                                .clickable(enabled = candidate.series != null) { toggleCandidate(candidate) }
+                                .padding(horizontal = 10.dp, vertical = 10.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .size(10.dp)
+                                    .clip(CircleShape)
+                                    .background(
+                                        if (candidate.series == null) MutedText
+                                        else scenarioComparisonColor(
+                                            if (selectedIndex >= 0) selectedIndex else candidates.indexOf(candidate)
+                                        )
+                                    )
+                            )
+                            Spacer(modifier = Modifier.width(9.dp))
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    candidate.name,
+                                    color = if (candidate.series == null) MutedText else TextPrimary,
+                                    fontSize = 14.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                                Text(
+                                    if (candidate.series == null) "계산 결과 없음" else scenarioComparisonTypeCashFlowLabel(type),
+                                    color = TextSecondary,
+                                    fontSize = 11.sp,
+                                    fontWeight = FontWeight.Bold
+                                )
+                            }
+                            if (selected) Text("선택", color = BrandGreen, fontSize = 12.sp, fontWeight = FontWeight.ExtraBold)
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    Spacer(modifier = Modifier.height(14.dp))
+    when {
+        selectedSeries.isEmpty() -> BacktestCard {
+            Text("성공확률을 계산할 시나리오를 선택해 주세요.", color = TextSecondary, fontSize = 14.sp)
+        }
+        isCalculating -> BacktestCard {
+            Text("선택한 시나리오의 성공확률을 계산하고 있어요.", color = TextSecondary, fontSize = 14.sp)
+        }
+        else -> {
+            volatilityFailures.forEachIndexed { index, failure ->
+                if (index > 0) Spacer(modifier = Modifier.height(10.dp))
+                RetirementVolatilityFailureCard(failure)
+            }
+            if (volatilityFailures.isNotEmpty() && analyses.isNotEmpty()) Spacer(modifier = Modifier.height(10.dp))
+            analyses.forEachIndexed { index, analysis ->
+                if (index > 0) Spacer(modifier = Modifier.height(10.dp))
+                RetirementScenarioResultCard(analysis, index)
+            }
+            if (analyses.isNotEmpty()) {
+                Spacer(modifier = Modifier.height(14.dp))
+                BacktestCard {
+                    SectionTitle("연차별 은퇴 생존확률")
+                    Spacer(modifier = Modifier.height(12.dp))
+                    RetirementScenarioSurvivalChart(analyses)
+                }
+                Spacer(modifier = Modifier.height(14.dp))
+                RetirementScenarioSuccessTable(analyses)
+            }
+        }
+    }
+}
+
+@Composable
+private fun RetirementVolatilityFailureCard(failure: RetirementVolatilityFailure) {
+    BacktestCard {
+        Text(failure.scenarioName, color = TextPrimary, fontSize = 15.sp, fontWeight = FontWeight.ExtraBold)
+        Spacer(modifier = Modifier.height(6.dp))
+        Text(
+            "과거 가격 데이터가 부족해 성공확률을 계산하지 않았습니다.",
+            color = PositiveRed,
+            fontSize = 13.sp,
+            fontWeight = FontWeight.Bold
+        )
+        Spacer(modifier = Modifier.height(4.dp))
+        Text(
+            "필요 종목: ${failure.tickers.ifEmpty { listOf("종목 정보 없음") }.joinToString(" · ")} · 최소 월수익률 12개",
+            color = TextSecondary,
+            fontSize = 12.sp,
+            lineHeight = 18.sp
+        )
+    }
+}
+
+@Composable
+private fun RetirementScenarioResultCard(analysis: RetirementScenarioSuccessAnalysis, colorIndex: Int) {
+    val result = analysis.result
+    val volatility = analysis.historicalVolatility
+    val resultColor = when {
+        result.successRatePercent >= 80.0 -> BrandGreen
+        result.successRatePercent >= 60.0 -> CashOrange
+        else -> PositiveRed
+    }
+    BacktestCard {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Box(modifier = Modifier.size(10.dp).clip(CircleShape).background(scenarioComparisonColor(colorIndex)))
+            Spacer(modifier = Modifier.width(8.dp))
+            Column(modifier = Modifier.weight(1f)) {
+                Text(analysis.scenarioName, color = TextPrimary, fontSize = 16.sp, fontWeight = FontWeight.ExtraBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Text(scenarioComparisonTypeLabel(analysis.type), color = TextSecondary, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+            }
+            Text("${formatDecimal(result.successRatePercent)}%", color = resultColor, fontSize = 27.sp, fontWeight = FontWeight.ExtraBold)
+        }
+        Spacer(modifier = Modifier.height(8.dp))
+        Text(
+            "${NumberFormat.getNumberInstance(Locale.KOREA).format(result.simulations)}개 경로 중 " +
+                "${NumberFormat.getNumberInstance(Locale.KOREA).format(result.successfulPaths)}개 생존",
+            color = TextSecondary,
+            fontSize = 12.sp,
+            fontWeight = FontWeight.Bold
+        )
+        Spacer(modifier = Modifier.height(14.dp))
+        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            RetirementSuccessMetric("기준 초기자산", formatWon(analysis.inferredInitialAssetWon), Modifier.weight(1f))
+            RetirementSuccessMetric("최종 중앙값", formatWon(result.medianFinalAssetWon), Modifier.weight(1f))
+        }
+        Spacer(modifier = Modifier.height(8.dp))
+        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            RetirementSuccessMetric("역산 연수익률", "${formatDecimal(analysis.expectedAnnualReturnPercent)}%", Modifier.weight(1f))
+            RetirementSuccessMetric("과거 연환산 변동성", "${formatDecimal(volatility.annualizedVolatilityPercent)}%", Modifier.weight(1f))
+        }
+        Spacer(modifier = Modifier.height(8.dp))
+        Text(
+            "${volatility.tickers.joinToString(" · ")} 조정종가 · " +
+                "${volatility.startMonth.toString().replace('-', '.')}~${volatility.endMonth.toString().replace('-', '.')} · " +
+                "월수익률 ${volatility.monthlyObservationCount}개",
+            color = TextSecondary,
+            fontSize = 11.sp,
+            lineHeight = 17.sp
+        )
+    }
+}
+
+@Composable
+private fun RetirementScenarioSurvivalChart(analyses: List<RetirementScenarioSuccessAnalysis>) {
+    val years = analyses.flatMap { it.result.rows }.map { it.year }.distinct().sorted()
+    if (years.isEmpty()) return
+    var selectedYear by remember(analyses.map { it.scenarioId }) { mutableIntStateOf(years.last()) }
+    Column(modifier = Modifier.fillMaxWidth()) {
+        Canvas(
+            modifier = Modifier
+                .fillMaxWidth()
+                .height(240.dp)
+                .clipToBounds()
+                .pointerInput(years) {
+                    detectTapGestures { offset ->
+                        selectedYear = scenarioComparisonYearForOffset(offset.x, size.width.toFloat(), years)
+                    }
+                }
+        ) {
+            val left = 58f
+            val right = size.width - 8f
+            val top = 14f
+            val bottom = size.height - 34f
+            val chartWidth = (right - left).coerceAtLeast(1f)
+            val chartHeight = (bottom - top).coerceAtLeast(1f)
+            val yearRange = (years.last() - years.first()).coerceAtLeast(1)
+            val labelPaint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
+                color = TextSecondary.toArgb()
+                textSize = 18f
+                textAlign = android.graphics.Paint.Align.RIGHT
+            }
+            val yearPaint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
+                color = TextSecondary.toArgb()
+                textSize = 18f
+                textAlign = android.graphics.Paint.Align.CENTER
+            }
+            listOf(100, 75, 50, 25, 0).forEach { percent ->
+                val y = bottom - chartHeight * percent / 100f
+                drawLine(LineColor, Offset(left, y), Offset(right, y), strokeWidth = 1.2f)
+                drawContext.canvas.nativeCanvas.drawText("$percent%", left - 7f, y + 6f, labelPaint)
+            }
+            analyses.forEachIndexed { index, analysis ->
+                val path = Path()
+                analysis.result.rows.forEachIndexed { pointIndex, row ->
+                    val x = left + chartWidth * (row.year - years.first()).toFloat() / yearRange.toFloat()
+                    val y = bottom - chartHeight * row.survivalRatePercent.toFloat() / 100f
+                    if (pointIndex == 0) path.moveTo(x, y) else path.lineTo(x, y)
+                }
+                drawPath(path, scenarioComparisonColor(index), style = androidx.compose.ui.graphics.drawscope.Stroke(width = 4f, cap = StrokeCap.Round))
+            }
+            listOf(years.first(), years.getOrElse(9) { years.last() }, years.last()).distinct().forEach { year ->
+                val x = left + chartWidth * (year - years.first()).toFloat() / yearRange.toFloat()
+                drawContext.canvas.nativeCanvas.drawText("${year}년", x, bottom + 25f, yearPaint)
+            }
+            val selectedX = left + chartWidth * (selectedYear - years.first()).toFloat() / yearRange.toFloat()
+            drawLine(TextPrimary.copy(alpha = 0.45f), Offset(selectedX, top), Offset(selectedX, bottom), strokeWidth = 2f)
+            analyses.forEachIndexed { index, analysis ->
+                analysis.result.rows.firstOrNull { it.year == selectedYear }?.let { row ->
+                    val y = bottom - chartHeight * row.survivalRatePercent.toFloat() / 100f
+                    drawCircle(PanelColor, radius = 7f, center = Offset(selectedX, y))
+                    drawCircle(scenarioComparisonColor(index), radius = 5f, center = Offset(selectedX, y))
+                }
+            }
+        }
+        Spacer(modifier = Modifier.height(8.dp))
+        Text("${selectedYear}년차", color = TextSecondary, fontSize = 12.sp, fontWeight = FontWeight.ExtraBold)
+        analyses.forEachIndexed { index, analysis ->
+            val row = analysis.result.rows.firstOrNull { it.year == selectedYear } ?: return@forEachIndexed
+            Row(modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                Box(modifier = Modifier.size(9.dp).clip(CircleShape).background(scenarioComparisonColor(index)))
+                Spacer(modifier = Modifier.width(7.dp))
+                Text(analysis.scenarioName, color = TextPrimary, fontSize = 12.sp, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Text("${formatDecimal(row.survivalRatePercent)}%", color = TextPrimary, fontSize = 13.sp, fontWeight = FontWeight.ExtraBold)
+            }
+        }
+    }
+}
+
+@Composable
+private fun RetirementScenarioSuccessTable(analyses: List<RetirementScenarioSuccessAnalysis>) {
+    val years = analyses.flatMap { it.result.rows }.map { it.year }.distinct().sorted()
+    BacktestCard {
+        SectionTitle("연차별 성공확률")
+        Spacer(modifier = Modifier.height(10.dp))
+        Column(modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState())) {
+            val tableWidth = (58 + analyses.size * 132).dp
+            Row(modifier = Modifier.width(tableWidth).clip(RoundedCornerShape(8.dp)).background(SoftSurface).padding(vertical = 9.dp)) {
+                Text("연차", color = TextSecondary, fontSize = 12.sp, fontWeight = FontWeight.Bold, modifier = Modifier.width(58.dp), textAlign = TextAlign.Center)
+                analyses.forEach { analysis ->
+                    Text(analysis.scenarioName, color = TextSecondary, fontSize = 12.sp, fontWeight = FontWeight.ExtraBold, modifier = Modifier.width(132.dp).padding(horizontal = 6.dp), textAlign = TextAlign.End, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                }
+            }
+            years.forEach { year ->
+                Row(modifier = Modifier.width(tableWidth).padding(vertical = 10.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Text("${year}년", color = TextPrimary, fontSize = 12.sp, fontWeight = FontWeight.ExtraBold, modifier = Modifier.width(58.dp), textAlign = TextAlign.Center)
+                    analyses.forEach { analysis ->
+                        val rate = analysis.result.rows.firstOrNull { it.year == year }?.survivalRatePercent
+                        Text(rate?.let { "${formatDecimal(it)}%" } ?: "-", color = TextPrimary, fontSize = 12.sp, fontWeight = FontWeight.Bold, modifier = Modifier.width(132.dp).padding(horizontal = 6.dp), textAlign = TextAlign.End, maxLines = 1)
+                    }
+                }
+                Box(modifier = Modifier.width(tableWidth).height(1.dp).background(LineColor))
+            }
+        }
+    }
+}
+
+@Suppress("unused")
+@Composable
+private fun LegacyRetirementSuccessContent() {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
+    val cached = remember(context) { loadRetirementSuccessSnapshot(context) ?: RetirementSuccessSnapshot() }
+    var initialAssetEok by remember { mutableStateOf(cached.initialAssetEok) }
+    var monthlySpendingMan by remember { mutableStateOf(cached.monthlySpendingMan) }
+    var expectedReturn by remember { mutableStateOf(cached.expectedReturn) }
+    var volatility by remember { mutableStateOf(cached.volatility) }
+    var inflation by remember { mutableStateOf(cached.inflation) }
+    var years by remember { mutableStateOf(cached.years) }
+    var simulations by remember { mutableIntStateOf(cached.simulations) }
+    var result by remember { mutableStateOf(cached.result) }
+    var isCalculating by remember { mutableStateOf(false) }
+    val simulationOptions = listOf(1_000, 5_000, 10_000)
+
+    fun invalidateResult() {
+        result = null
+    }
+
+    fun calculate() {
+        val initialAssetWon = eokInputToWon(initialAssetEok)
+        val monthlySpendingWon = manInputToWon(monthlySpendingMan)
+        val simulationYears = years.toIntOrNull()?.coerceIn(1, 60) ?: 30
+        if (initialAssetWon <= 0L) {
+            Toast.makeText(context, "초기 은퇴자산을 입력해 주세요.", Toast.LENGTH_SHORT).show()
+            return
+        }
+        scope.launch {
+            isCalculating = true
+            val calculated = withContext(Dispatchers.Default) {
+                RetirementSuccessEngine.calculate(
+                    RetirementSuccessInput(
+                        initialAssetWon = initialAssetWon,
+                        monthlySpendingWon = monthlySpendingWon,
+                        expectedAnnualReturnPercent = expectedReturn.toDoubleOrNull() ?: 7.0,
+                        annualVolatilityPercent = volatility.toDoubleOrNull() ?: 15.0,
+                        annualInflationPercent = inflation.toDoubleOrNull() ?: 2.5,
+                        years = simulationYears,
+                        simulations = simulations
+                    )
+                )
+            }
+            result = calculated
+            saveRetirementSuccessSnapshot(
+                context,
+                RetirementSuccessSnapshot(
+                    initialAssetEok = initialAssetEok,
+                    monthlySpendingMan = monthlySpendingMan,
+                    expectedReturn = expectedReturn,
+                    volatility = volatility,
+                    inflation = inflation,
+                    years = simulationYears.toString(),
+                    simulations = simulations,
+                    result = calculated
+                )
+            )
+            isCalculating = false
+        }
+    }
+
+    BacktestCard {
+        SectionTitle("은퇴 시뮬레이션 조건")
+        Spacer(modifier = Modifier.height(6.dp))
+        Text(
+            "매년 수익 반영 후 물가에 따라 늘어난 생활비를 차감합니다.",
+            color = TextSecondary,
+            fontSize = 12.sp,
+            lineHeight = 18.sp
+        )
+        Spacer(modifier = Modifier.height(12.dp))
+        FourAssetDecimalInputRow("초기 은퇴자산", initialAssetEok, "억원") {
+            initialAssetEok = it
+            invalidateResult()
+        }
+        FourAssetDecimalInputRow("월 생활비", monthlySpendingMan, "만원") {
+            monthlySpendingMan = it
+            invalidateResult()
+        }
+        FourAssetDecimalInputRow("기대수익률", expectedReturn, "%") {
+            expectedReturn = it
+            invalidateResult()
+        }
+        FourAssetDecimalInputRow("연 변동성", volatility, "%") {
+            volatility = it
+            invalidateResult()
+        }
+        FourAssetDecimalInputRow("물가상승률", inflation, "%") {
+            inflation = it
+            invalidateResult()
+        }
+        FourAssetDecimalInputRow("은퇴 기간", years, "년") {
+            years = it
+            invalidateResult()
+        }
+        Spacer(modifier = Modifier.height(14.dp))
+        Text("시뮬레이션 횟수", color = TextSecondary, fontSize = 12.sp, fontWeight = FontWeight.ExtraBold)
+        Spacer(modifier = Modifier.height(7.dp))
+        SegmentedLabels(
+            labels = listOf("1천회", "5천회", "1만회"),
+            selectedIndex = simulationOptions.indexOf(simulations).coerceAtLeast(1),
+            onSelect = {
+                simulations = simulationOptions[it]
+                invalidateResult()
+            }
+        )
+        Spacer(modifier = Modifier.height(18.dp))
+        PrimaryActionButton(
+            text = if (isCalculating) "계산 중..." else "성공확률 계산",
+            enabled = !isCalculating,
+            onClick = ::calculate
+        )
+    }
+
+    result?.let { calculated ->
+        Spacer(modifier = Modifier.height(14.dp))
+        RetirementSuccessResultCard(calculated)
+        Spacer(modifier = Modifier.height(14.dp))
+        BacktestCard {
+            SectionTitle("연차별 은퇴 생존확률")
+            Spacer(modifier = Modifier.height(12.dp))
+            RetirementSurvivalChart(calculated.rows)
+        }
+        Spacer(modifier = Modifier.height(14.dp))
+        RetirementSuccessTable(calculated.rows)
+    }
+}
+
+@Composable
+private fun RetirementSuccessResultCard(result: RetirementSuccessResult) {
+    val resultColor = when {
+        result.successRatePercent >= 80.0 -> BrandGreen
+        result.successRatePercent >= 60.0 -> CashOrange
+        else -> PositiveRed
+    }
+    BacktestCard {
+        Text("은퇴 성공확률", color = TextSecondary, fontSize = 13.sp, fontWeight = FontWeight.Bold)
+        Spacer(modifier = Modifier.height(4.dp))
+        Text(
+            "${formatDecimal(result.successRatePercent)}%",
+            color = resultColor,
+            fontSize = 38.sp,
+            fontWeight = FontWeight.ExtraBold
+        )
+        Text(
+            "${NumberFormat.getNumberInstance(Locale.KOREA).format(result.simulations)}개 경로 중 " +
+                "${NumberFormat.getNumberInstance(Locale.KOREA).format(result.successfulPaths)}개 생존",
+            color = TextSecondary,
+            fontSize = 12.sp,
+            fontWeight = FontWeight.Bold
+        )
+        Spacer(modifier = Modifier.height(16.dp))
+        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            RetirementSuccessMetric("하위 10%", formatWon(result.lowerFinalAssetWon), Modifier.weight(1f))
+            RetirementSuccessMetric("최종 중앙값", formatWon(result.medianFinalAssetWon), Modifier.weight(1f))
+        }
+        Spacer(modifier = Modifier.height(8.dp))
+        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            RetirementSuccessMetric("상위 10%", formatWon(result.upperFinalAssetWon), Modifier.weight(1f))
+            RetirementSuccessMetric(
+                "실패 중앙 연차",
+                result.medianDepletionYear?.let { "${it}년" } ?: "없음",
+                Modifier.weight(1f)
+            )
+        }
+    }
+}
+
+@Composable
+private fun RetirementSuccessMetric(label: String, value: String, modifier: Modifier = Modifier) {
+    Column(modifier = modifier.clip(RoundedCornerShape(8.dp)).background(SoftSurface).padding(12.dp)) {
+        Text(label, color = TextSecondary, fontSize = 11.sp, fontWeight = FontWeight.Bold, maxLines = 1)
+        Spacer(modifier = Modifier.height(4.dp))
+        Text(
+            value,
+            color = TextPrimary,
+            fontSize = 14.sp,
+            fontWeight = FontWeight.ExtraBold,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis
+        )
+    }
+}
+
+@Composable
+private fun RetirementSurvivalChart(rows: List<RetirementSuccessYear>) {
+    if (rows.isEmpty()) return
+    var selectedIndex by remember(rows.size) { mutableIntStateOf(0) }
+    val scrollState = rememberScrollState()
+    Column(modifier = Modifier.fillMaxWidth()) {
+        Box(modifier = Modifier.fillMaxWidth().horizontalScroll(scrollState)) {
+            Canvas(
+                modifier = Modifier
+                    .width((68 + rows.size * 36).dp)
+                    .height(230.dp)
+                    .pointerInput(rows.size) {
+                        detectTapGestures { offset ->
+                            val left = 58f
+                            val right = (size.width - 8f).coerceAtLeast(left + 1f)
+                            val groupWidth = (right - left) / rows.size
+                            selectedIndex = ((offset.x - left) / groupWidth).toInt().coerceIn(rows.indices)
+                        }
+                    }
+            ) {
+                val left = 58f
+                val right = size.width - 8f
+                val top = 14f
+                val bottom = size.height - 34f
+                val chartWidth = (right - left).coerceAtLeast(1f)
+                val chartHeight = (bottom - top).coerceAtLeast(1f)
+                val groupWidth = chartWidth / rows.size
+                val labelPaint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
+                    color = TextSecondary.toArgb()
+                    textSize = 18f
+                    textAlign = android.graphics.Paint.Align.RIGHT
+                }
+                val yearPaint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
+                    color = TextSecondary.toArgb()
+                    textSize = 18f
+                    textAlign = android.graphics.Paint.Align.CENTER
+                }
+                listOf(100, 75, 50, 25, 0).forEach { percent ->
+                    val y = bottom - chartHeight * percent / 100f
+                    drawLine(LineColor, Offset(left, y), Offset(right, y), strokeWidth = 1.2f)
+                    drawContext.canvas.nativeCanvas.drawText("$percent%", left - 7f, y + 6f, labelPaint)
+                }
+                rows.forEachIndexed { index, row ->
+                    val barWidth = groupWidth * 0.62f
+                    val x = left + groupWidth * index + (groupWidth - barWidth) / 2f
+                    val barHeight = chartHeight * row.survivalRatePercent.toFloat() / 100f
+                    drawRect(
+                        color = if (index == selectedIndex) PositiveRed else BrandGreen,
+                        topLeft = Offset(x, bottom - barHeight),
+                        size = androidx.compose.ui.geometry.Size(barWidth, barHeight)
+                    )
+                    drawContext.canvas.nativeCanvas.drawText(
+                        "${row.year}년",
+                        x + barWidth / 2f,
+                        bottom + 25f,
+                        yearPaint
+                    )
+                }
+            }
+        }
+        val selected = rows[selectedIndex]
+        Spacer(modifier = Modifier.height(8.dp))
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text("${selected.year}년차", color = TextSecondary, fontSize = 12.sp, fontWeight = FontWeight.ExtraBold)
+            Spacer(modifier = Modifier.weight(1f))
+            Text(
+                "생존 ${formatDecimal(selected.survivalRatePercent)}%",
+                color = TextPrimary,
+                fontSize = 14.sp,
+                fontWeight = FontWeight.ExtraBold
+            )
+        }
+        Spacer(modifier = Modifier.height(5.dp))
+        Text(
+            "하위 10% ${formatWon(selected.lowerAssetWon)} · 중앙값 ${formatWon(selected.medianAssetWon)} · 상위 10% ${formatWon(selected.upperAssetWon)}",
+            color = TextSecondary,
+            fontSize = 11.sp,
+            lineHeight = 17.sp
+        )
+    }
+}
+
+@Composable
+private fun RetirementSuccessTable(rows: List<RetirementSuccessYear>) {
+    BacktestCard {
+        SectionTitle("연차별 확률 명세")
+        Spacer(modifier = Modifier.height(10.dp))
+        Column(modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState())) {
+            val tableWidth = 520.dp
+            Row(
+                modifier = Modifier.width(tableWidth).clip(RoundedCornerShape(8.dp)).background(SoftSurface).padding(vertical = 9.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                RetirementTableCell("연차", 52.dp, TextAlign.Center)
+                RetirementTableCell("생존확률", 78.dp, TextAlign.End)
+                RetirementTableCell("하위 10%", 130.dp, TextAlign.End)
+                RetirementTableCell("중앙값", 130.dp, TextAlign.End)
+                RetirementTableCell("상위 10%", 130.dp, TextAlign.End)
+            }
+            rows.forEach { row ->
+                Row(
+                    modifier = Modifier.width(tableWidth).padding(vertical = 10.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    RetirementTableCell("${row.year}년", 52.dp, TextAlign.Center, TextPrimary)
+                    RetirementTableCell("${formatDecimal(row.survivalRatePercent)}%", 78.dp, TextAlign.End, TextPrimary)
+                    RetirementTableCell(formatWon(row.lowerAssetWon), 130.dp, TextAlign.End, TextPrimary)
+                    RetirementTableCell(formatWon(row.medianAssetWon), 130.dp, TextAlign.End, TextPrimary)
+                    RetirementTableCell(formatWon(row.upperAssetWon), 130.dp, TextAlign.End, TextPrimary)
+                }
+                Box(modifier = Modifier.width(tableWidth).height(1.dp).background(LineColor))
+            }
+        }
+    }
+}
+
+@Composable
+private fun RetirementTableCell(
+    text: String,
+    width: androidx.compose.ui.unit.Dp,
+    textAlign: TextAlign,
+    color: Color = TextSecondary
+) {
+    Text(
+        text,
+        color = color,
+        fontSize = 12.sp,
+        fontWeight = FontWeight.Bold,
+        modifier = Modifier.width(width).padding(horizontal = 6.dp),
+        textAlign = textAlign,
+        maxLines = 1
+    )
+}
+
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
+@Composable
+private fun BacktestScreen(
+    accounts: List<AccountUi>,
+    settings: AppSettings,
+    usdKrw: Double,
+    onLockedExit: (() -> Unit)? = null
+) {
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    BackHandler(enabled = onLockedExit != null) { onLockedExit?.invoke() }
     if (savedBacktestPresetsCache.isEmpty()) {
         savedBacktestPresetsCache.addAll(loadSavedBacktestPresets(context))
     }
-    val cachedPreset = remember { lastBacktestPresetCache }
+    val cachedPreset = remember(context) {
+        (lastBacktestPresetCache ?: loadLastBacktestPreset(context)).also {
+            lastBacktestPresetCache = it
+            lastBacktestResultCache = it?.result
+        }
+    }
     val presets = remember { mutableStateListOf<BacktestPreset>().also { it.addAll(savedBacktestPresetsCache) } }
     val assets = remember { mutableStateListOf<BacktestAssetUi>().also { cachedPreset?.assets?.let(it::addAll) } }
     var startYear by remember { mutableStateOf(cachedPreset?.startYear ?: "2010") }
@@ -5920,7 +7884,7 @@ private fun BacktestScreen(accounts: List<AccountUi>, settings: AppSettings, usd
     var contributionAmount by remember { mutableStateOf(cachedPreset?.contributionAmount ?: "1000000") }
     var dividendReinvest by remember { mutableStateOf(cachedPreset?.dividendReinvest ?: true) }
     var exchangeRateEnabled by remember { mutableStateOf(cachedPreset?.exchangeRateEnabled ?: true) }
-    var result by remember { mutableStateOf(lastBacktestResultCache) }
+    var result by remember { mutableStateOf(lastBacktestResultCache ?: cachedPreset?.result) }
     var showAssetSearch by remember { mutableStateOf(false) }
     var pendingAsset by remember { mutableStateOf<AssetOption?>(null) }
     var weightText by remember { mutableStateOf("10") }
@@ -5929,6 +7893,7 @@ private fun BacktestScreen(accounts: List<AccountUi>, settings: AppSettings, usd
     var showLoadDialog by remember { mutableStateOf(false) }
     var presetName by remember { mutableStateOf("") }
     var deletePreset by remember { mutableStateOf<BacktestPreset?>(null) }
+    var renamePreset by remember { mutableStateOf<BacktestPreset?>(null) }
     var isRunning by remember { mutableStateOf(false) }
     var selectedTool by remember { mutableStateOf("백테스트") }
 
@@ -5947,6 +7912,35 @@ private fun BacktestScreen(accounts: List<AccountUi>, settings: AppSettings, usd
         assets = assets.toList(),
         result = savedResult
     )
+
+    fun saveNamedPreset(name: String) {
+        val preset = currentPreset(name, result)
+        presets.removeAll { it.name == preset.name }
+        savedBacktestPresetsCache.removeAll { it.name == preset.name }
+        presets.add(preset)
+        savedBacktestPresetsCache.add(preset)
+        saveSavedBacktestPresets(context, savedBacktestPresetsCache)
+        lastBacktestPresetCache = preset
+        lastBacktestResultCache = preset.result
+        saveLastBacktestPreset(context, preset)
+        presetName = ""
+        showSaveDialog = false
+        Toast.makeText(context, "백테스트를 저장했어요.", Toast.LENGTH_SHORT).show()
+    }
+
+    fun renameSavedPreset(preset: BacktestPreset, newName: String) {
+        val renamed = preset.copy(name = newName)
+        val listIndex = presets.indexOfFirst { it.name == preset.name }
+        val cacheIndex = savedBacktestPresetsCache.indexOfFirst { it.name == preset.name }
+        if (listIndex >= 0) presets[listIndex] = renamed
+        if (cacheIndex >= 0) savedBacktestPresetsCache[cacheIndex] = renamed
+        saveSavedBacktestPresets(context, savedBacktestPresetsCache)
+        if (lastBacktestPresetCache?.name == preset.name) {
+            lastBacktestPresetCache = renamed
+            saveLastBacktestPreset(context, renamed)
+        }
+        renamePreset = null
+    }
 
     fun runBacktest() {
         val totalWeight = assets.sumOf { it.weight }
@@ -5972,8 +7966,10 @@ private fun BacktestScreen(accounts: List<AccountUi>, settings: AppSettings, usd
                 assets = assets.toList()
             )
             result = calculated
-            lastBacktestPresetCache = currentPreset(savedResult = calculated)
+            val latestPreset = currentPreset(savedResult = calculated)
+            lastBacktestPresetCache = latestPreset
             lastBacktestResultCache = calculated
+            saveLastBacktestPreset(context, latestPreset)
             isRunning = false
             if (!calculated.usedHistoricalData) {
                 Toast.makeText(context, "과거데이터 조회가 부족해 샘플 경로로 계산했어요.", Toast.LENGTH_SHORT).show()
@@ -5982,13 +7978,28 @@ private fun BacktestScreen(accounts: List<AccountUi>, settings: AppSettings, usd
     }
 
     MainTabScreenColumn {
+        if (onLockedExit != null) {
+            Text(
+                "‹  잠금 화면으로 돌아가기",
+                color = BrandGreen,
+                fontSize = 14.sp,
+                fontWeight = FontWeight.ExtraBold,
+                modifier = Modifier
+                    .clip(RoundedCornerShape(8.dp))
+                    .clickable(onClick = onLockedExit)
+                    .padding(vertical = 8.dp)
+            )
+            Spacer(modifier = Modifier.height(8.dp))
+        }
         AppHeader(title = "시뮬레이터")
         BacktestToolSwitcher(selected = selectedTool) { selectedTool = it }
         Spacer(modifier = Modifier.height(18.dp))
         when (selectedTool) {
             "배당" -> DividendSimulationContent(accounts, usdKrw)
             "자가배당" -> SelfDividendPlaceholderContent()
-            "4자산 분배" -> FourAssetDistributionContent()
+            "3자산 분배" -> FourAssetDistributionContent()
+            "시나리오 비교" -> ScenarioComparisonContent()
+            "은퇴 성공확률" -> RetirementSuccessContent()
             else -> {
         BacktestCard {
             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -6152,37 +8163,14 @@ private fun BacktestScreen(accounts: List<AccountUi>, settings: AppSettings, usd
     }
 
     if (showSaveDialog) {
-        AlertDialog(
-            onDismissRequest = { showSaveDialog = false },
-            containerColor = PanelColor,
-            title = { Text("백테스트 저장", color = TextPrimary, fontWeight = FontWeight.ExtraBold) },
-            text = {
-                OutlinedTextField(
-                    value = presetName,
-                    onValueChange = { presetName = it },
-                    placeholder = { Text("이름 입력", color = MutedText) },
-                    singleLine = true,
-                    colors = appTextFieldColors()
-                )
-            },
-            confirmButton = {
-                TextButton(onClick = {
-                    if (presetName.isNotBlank()) {
-                        val preset = currentPreset(presetName.trim(), result)
-                        presets.removeAll { it.name == preset.name }
-                        savedBacktestPresetsCache.removeAll { it.name == preset.name }
-                        presets.add(preset)
-                        savedBacktestPresetsCache.add(preset)
-                        saveSavedBacktestPresets(context, savedBacktestPresetsCache)
-                        lastBacktestPresetCache = preset
-                        lastBacktestResultCache = preset.result
-                        presetName = ""
-                        showSaveDialog = false
-                        Toast.makeText(context, "백테스트를 저장했어요.", Toast.LENGTH_SHORT).show()
-                    }
-                }) { Text("저장", color = BrandGreen, fontWeight = FontWeight.Bold) }
-            },
-            dismissButton = { TextButton(onClick = { showSaveDialog = false }) { Text("취소", color = TextSecondary) } }
+        SimulationPresetSaveDialog(
+            title = "백테스트 저장",
+            name = presetName,
+            existingNames = presets.map { it.name },
+            onNameChange = { presetName = it },
+            onDismiss = { showSaveDialog = false },
+            onSaveNew = ::saveNamedPreset,
+            onOverwrite = ::saveNamedPreset
         )
     }
 
@@ -6217,11 +8205,12 @@ private fun BacktestScreen(accounts: List<AccountUi>, settings: AppSettings, usd
                                     result = preset.result
                                     lastBacktestPresetCache = preset
                                     lastBacktestResultCache = preset.result
+                                    saveLastBacktestPreset(context, preset)
                                     showLoadDialog = false
                                         },
                                         onLongClick = {
                                             showLoadDialog = false
-                                            deletePreset = preset
+                                            renamePreset = preset
                                         }
                                     )
                                     .padding(vertical = 12.dp),
@@ -6236,6 +8225,19 @@ private fun BacktestScreen(accounts: List<AccountUi>, settings: AppSettings, usd
                 }
             },
             confirmButton = { TextButton(onClick = { showLoadDialog = false }) { Text("닫기", color = TextSecondary) } }
+        )
+    }
+
+    renamePreset?.let { preset ->
+        SimulationPresetRenameDialog(
+            currentName = preset.name,
+            existingNames = presets.map { it.name },
+            onDismiss = { renamePreset = null },
+            onRename = { renameSavedPreset(preset, it) },
+            onDelete = {
+                renamePreset = null
+                deletePreset = preset
+            }
         )
     }
 
@@ -6267,7 +8269,11 @@ private fun SelfDividendPlaceholderContent() {
     if (savedSelfDividendPresetsCache.isEmpty()) {
         savedSelfDividendPresetsCache.addAll(loadSavedSelfDividendPresets(context))
     }
-    val cachedPreset = remember { lastSelfDividendPresetCache }
+    val cachedPreset = remember(context) {
+        (lastSelfDividendPresetCache ?: loadLastSelfDividendPreset(context)).also {
+            lastSelfDividendPresetCache = it
+        }
+    }
     val savedPresets = remember {
         mutableStateListOf<SelfDividendPreset>().also { it.addAll(savedSelfDividendPresetsCache) }
     }
@@ -6282,6 +8288,7 @@ private fun SelfDividendPlaceholderContent() {
     var showLoadDialog by remember { mutableStateOf(false) }
     var presetName by remember { mutableStateOf("") }
     var deletePreset by remember { mutableStateOf<SelfDividendPreset?>(null) }
+    var renamePreset by remember { mutableStateOf<SelfDividendPreset?>(null) }
     val assetOptions = remember(context) { manualAssetOptions(context) }
 
     fun updateAsset(index: Int, next: SelfDividendAssetUi) {
@@ -6294,6 +8301,34 @@ private fun SelfDividendPlaceholderContent() {
         assets = selectedAssets.toList(),
         result = projectionRows
     )
+
+    fun saveNamedPreset(name: String) {
+        val preset = currentPreset(name)
+        savedPresets.removeAll { it.name == preset.name }
+        savedSelfDividendPresetsCache.removeAll { it.name == preset.name }
+        savedPresets.add(preset)
+        savedSelfDividendPresetsCache.add(preset)
+        saveSavedSelfDividendPresets(context, savedSelfDividendPresetsCache)
+        lastSelfDividendPresetCache = preset
+        saveLastSelfDividendPreset(context, preset)
+        presetName = ""
+        showSaveDialog = false
+        Toast.makeText(context, "자가배당을 저장했어요.", Toast.LENGTH_SHORT).show()
+    }
+
+    fun renameSavedPreset(preset: SelfDividendPreset, newName: String) {
+        val renamed = preset.copy(name = newName)
+        val listIndex = savedPresets.indexOfFirst { it.name == preset.name }
+        val cacheIndex = savedSelfDividendPresetsCache.indexOfFirst { it.name == preset.name }
+        if (listIndex >= 0) savedPresets[listIndex] = renamed
+        if (cacheIndex >= 0) savedSelfDividendPresetsCache[cacheIndex] = renamed
+        saveSavedSelfDividendPresets(context, savedSelfDividendPresetsCache)
+        if (lastSelfDividendPresetCache?.name == preset.name) {
+            lastSelfDividendPresetCache = renamed
+            saveLastSelfDividendPreset(context, renamed)
+        }
+        renamePreset = null
+    }
 
     BacktestCard {
         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -6350,6 +8385,13 @@ private fun SelfDividendPlaceholderContent() {
                     Toast.makeText(context, "투자금과 연 인출액을 입력해 주세요.", Toast.LENGTH_SHORT).show()
                 } else {
                     projectionRows = rows
+                    val latestPreset = SelfDividendPreset(
+                        name = "마지막 자가배당",
+                        assets = selectedAssets.toList(),
+                        result = rows
+                    )
+                    lastSelfDividendPresetCache = latestPreset
+                    saveLastSelfDividendPreset(context, latestPreset)
                 }
             }
         )
@@ -6414,38 +8456,14 @@ private fun SelfDividendPlaceholderContent() {
     }
 
     if (showSaveDialog) {
-        AlertDialog(
-            onDismissRequest = { showSaveDialog = false },
-            containerColor = PanelColor,
-            title = { Text("자가배당 저장", color = TextPrimary, fontWeight = FontWeight.ExtraBold) },
-            text = {
-                OutlinedTextField(
-                    value = presetName,
-                    onValueChange = { presetName = it },
-                    placeholder = { Text("이름 입력", color = MutedText) },
-                    singleLine = true,
-                    colors = appTextFieldColors()
-                )
-            },
-            confirmButton = {
-                TextButton(onClick = {
-                    if (presetName.isNotBlank()) {
-                        val preset = currentPreset(presetName.trim())
-                        savedPresets.removeAll { it.name == preset.name }
-                        savedSelfDividendPresetsCache.removeAll { it.name == preset.name }
-                        savedPresets.add(preset)
-                        savedSelfDividendPresetsCache.add(preset)
-                        saveSavedSelfDividendPresets(context, savedSelfDividendPresetsCache)
-                        lastSelfDividendPresetCache = preset
-                        presetName = ""
-                        showSaveDialog = false
-                        Toast.makeText(context, "자가배당을 저장했어요.", Toast.LENGTH_SHORT).show()
-                    }
-                }) { Text("저장", color = BrandGreen, fontWeight = FontWeight.Bold) }
-            },
-            dismissButton = {
-                TextButton(onClick = { showSaveDialog = false }) { Text("취소", color = TextSecondary) }
-            }
+        SimulationPresetSaveDialog(
+            title = "자가배당 저장",
+            name = presetName,
+            existingNames = savedPresets.map { it.name },
+            onNameChange = { presetName = it },
+            onDismiss = { showSaveDialog = false },
+            onSaveNew = ::saveNamedPreset,
+            onOverwrite = ::saveNamedPreset
         )
     }
 
@@ -6474,11 +8492,12 @@ private fun SelfDividendPlaceholderContent() {
                                             selectedAssets.addAll(preset.assets)
                                             projectionRows = preset.result
                                             lastSelfDividendPresetCache = preset
+                                            saveLastSelfDividendPreset(context, preset)
                                             showLoadDialog = false
                                         },
                                         onLongClick = {
                                             showLoadDialog = false
-                                            deletePreset = preset
+                                            renamePreset = preset
                                         }
                                     )
                                     .padding(vertical = 12.dp),
@@ -6496,6 +8515,19 @@ private fun SelfDividendPlaceholderContent() {
             },
             confirmButton = {
                 TextButton(onClick = { showLoadDialog = false }) { Text("닫기", color = TextSecondary) }
+            }
+        )
+    }
+
+    renamePreset?.let { preset ->
+        SimulationPresetRenameDialog(
+            currentName = preset.name,
+            existingNames = savedPresets.map { it.name },
+            onDismiss = { renamePreset = null },
+            onRename = { renameSavedPreset(preset, it) },
+            onDelete = {
+                renamePreset = null
+                deletePreset = preset
             }
         )
     }
@@ -6527,7 +8559,11 @@ private fun FourAssetDistributionContent() {
     if (savedFourAssetDistributionPresetsCache.isEmpty()) {
         savedFourAssetDistributionPresetsCache.addAll(loadSavedFourAssetDistributionPresets(context))
     }
-    val cachedPreset = remember { lastFourAssetDistributionPresetCache }
+    val cachedPreset = remember(context) {
+        (lastFourAssetDistributionPresetCache ?: loadLastFourAssetDistributionPreset(context)).also {
+            lastFourAssetDistributionPresetCache = it
+        }
+    }
     val savedPresets = remember {
         mutableStateListOf<FourAssetDistributionPreset>().also { it.addAll(savedFourAssetDistributionPresetsCache) }
     }
@@ -6567,6 +8603,7 @@ private fun FourAssetDistributionContent() {
     var showLoadDialog by remember { mutableStateOf(false) }
     var presetName by remember { mutableStateOf("") }
     var deletePreset by remember { mutableStateOf<FourAssetDistributionPreset?>(null) }
+    var renamePreset by remember { mutableStateOf<FourAssetDistributionPreset?>(null) }
 
     fun currentAllocation(): FourAssetAllocation = FourAssetAllocation(
         schd = schdRatio.toDoubleOrNull() ?: 0.0,
@@ -6588,13 +8625,16 @@ private fun FourAssetDistributionContent() {
         }
     }
 
-    fun currentPreset(name: String = "4자산 분배") = FourAssetDistributionPreset(
+    fun currentPreset(
+        name: String = "3자산 분배",
+        useAppliedRatios: Boolean = false
+    ) = FourAssetDistributionPreset(
         name = name,
         totalCapitalEok = totalCapitalEok,
         monthlyExpenseMan = monthlyExpenseMan,
-        schdRatio = schdRatio,
-        jepqRatio = jepqRatio,
-        qldRatio = qldRatio,
+        schdRatio = if (useAppliedRatios) formatDecimal(appliedAllocation.schd) else schdRatio,
+        jepqRatio = if (useAppliedRatios) formatDecimal(appliedAllocation.jepq) else jepqRatio,
+        qldRatio = if (useAppliedRatios) formatDecimal(appliedAllocation.qld) else qldRatio,
         cashRatio = "0",
         appliedSchdRatio = appliedAllocation.schd,
         appliedJepqRatio = appliedAllocation.jepq,
@@ -6616,6 +8656,34 @@ private fun FourAssetDistributionContent() {
         taxAndInsuranceRate = taxAndInsuranceRate,
         stressTestEnabled = stressTestEnabled
     )
+
+    fun saveNamedPreset(name: String) {
+        val preset = currentPreset(name)
+        savedPresets.removeAll { it.name == preset.name }
+        savedFourAssetDistributionPresetsCache.removeAll { it.name == preset.name }
+        savedPresets.add(preset)
+        savedFourAssetDistributionPresetsCache.add(preset)
+        saveSavedFourAssetDistributionPresets(context, savedFourAssetDistributionPresetsCache)
+        lastFourAssetDistributionPresetCache = preset
+        saveLastFourAssetDistributionPreset(context, preset)
+        presetName = ""
+        showSaveDialog = false
+        Toast.makeText(context, "3자산 분배를 저장했어요.", Toast.LENGTH_SHORT).show()
+    }
+
+    fun renameSavedPreset(preset: FourAssetDistributionPreset, newName: String) {
+        val renamed = preset.copy(name = newName)
+        val listIndex = savedPresets.indexOfFirst { it.name == preset.name }
+        val cacheIndex = savedFourAssetDistributionPresetsCache.indexOfFirst { it.name == preset.name }
+        if (listIndex >= 0) savedPresets[listIndex] = renamed
+        if (cacheIndex >= 0) savedFourAssetDistributionPresetsCache[cacheIndex] = renamed
+        saveSavedFourAssetDistributionPresets(context, savedFourAssetDistributionPresetsCache)
+        if (lastFourAssetDistributionPresetCache?.name == preset.name) {
+            lastFourAssetDistributionPresetCache = renamed
+            saveLastFourAssetDistributionPreset(context, renamed)
+        }
+        renamePreset = null
+    }
 
     fun loadPreset(preset: FourAssetDistributionPreset) {
         totalCapitalEok = preset.totalCapitalEok
@@ -6646,6 +8714,7 @@ private fun FourAssetDistributionContent() {
         taxAndInsuranceRate = preset.taxAndInsuranceRate
         stressTestEnabled = preset.stressTestEnabled
         lastFourAssetDistributionPresetCache = preset
+        saveLastFourAssetDistributionPreset(context, preset)
     }
 
     val input = FourAssetRetirementInput(
@@ -6675,9 +8744,17 @@ private fun FourAssetDistributionContent() {
     )
     val result = calculateFourAssetRetirement(input)
 
+    SideEffect {
+        val latest = currentPreset(useAppliedRatios = true)
+        if (latest != lastFourAssetDistributionPresetCache) {
+            lastFourAssetDistributionPresetCache = latest
+            saveLastFourAssetDistributionPreset(context, latest)
+        }
+    }
+
     BacktestCard {
         Row(verticalAlignment = Alignment.CenterVertically) {
-            SectionTitle("4자산 분배 설정")
+            SectionTitle("3자산 분배 설정")
             Spacer(modifier = Modifier.weight(1f))
             Text(
                 "불러오기",
@@ -6689,7 +8766,7 @@ private fun FourAssetDistributionContent() {
         }
         Spacer(modifier = Modifier.height(10.dp))
         Text(
-            "SCHD, JEPQ, QLD, 현금 버퍼를 20년 동안 배당·생활비·스트레스 테스트 기준으로 시뮬레이션합니다.",
+            "SCHD, JEPQ, QLD를 20년 동안 배당·생활비·스트레스 테스트 기준으로 시뮬레이션합니다.",
             color = TextSecondary,
             fontSize = 14.sp,
             lineHeight = 21.sp
@@ -6778,7 +8855,7 @@ private fun FourAssetDistributionContent() {
     Spacer(modifier = Modifier.height(14.dp))
     FourAssetResultContent(result)
     Spacer(modifier = Modifier.height(14.dp))
-    PrimaryActionButton("4자산 분배 저장", enabled = true) {
+    PrimaryActionButton("3자산 분배 저장", enabled = true) {
         showSaveDialog = true
     }
 
@@ -6803,38 +8880,14 @@ private fun FourAssetDistributionContent() {
     }
 
     if (showSaveDialog) {
-        AlertDialog(
-            onDismissRequest = { showSaveDialog = false },
-            containerColor = PanelColor,
-            title = { Text("4자산 분배 저장", color = TextPrimary, fontWeight = FontWeight.ExtraBold) },
-            text = {
-                OutlinedTextField(
-                    value = presetName,
-                    onValueChange = { presetName = it },
-                    placeholder = { Text("이름 입력", color = MutedText) },
-                    singleLine = true,
-                    colors = appTextFieldColors()
-                )
-            },
-            confirmButton = {
-                TextButton(onClick = {
-                    if (presetName.isNotBlank()) {
-                        val preset = currentPreset(presetName.trim())
-                        savedPresets.removeAll { it.name == preset.name }
-                        savedFourAssetDistributionPresetsCache.removeAll { it.name == preset.name }
-                        savedPresets.add(preset)
-                        savedFourAssetDistributionPresetsCache.add(preset)
-                        saveSavedFourAssetDistributionPresets(context, savedFourAssetDistributionPresetsCache)
-                        lastFourAssetDistributionPresetCache = preset
-                        presetName = ""
-                        showSaveDialog = false
-                        Toast.makeText(context, "4자산 분배를 저장했어요.", Toast.LENGTH_SHORT).show()
-                    }
-                }) { Text("저장", color = BrandGreen, fontWeight = FontWeight.Bold) }
-            },
-            dismissButton = {
-                TextButton(onClick = { showSaveDialog = false }) { Text("취소", color = TextSecondary) }
-            }
+        SimulationPresetSaveDialog(
+            title = "3자산 분배 저장",
+            name = presetName,
+            existingNames = savedPresets.map { it.name },
+            onNameChange = { presetName = it },
+            onDismiss = { showSaveDialog = false },
+            onSaveNew = ::saveNamedPreset,
+            onOverwrite = ::saveNamedPreset
         )
     }
 
@@ -6842,7 +8895,7 @@ private fun FourAssetDistributionContent() {
         AlertDialog(
             onDismissRequest = { showLoadDialog = false },
             containerColor = PanelColor,
-            title = { Text("4자산 분배 불러오기", color = TextPrimary, fontWeight = FontWeight.ExtraBold) },
+            title = { Text("3자산 분배 불러오기", color = TextPrimary, fontWeight = FontWeight.ExtraBold) },
             text = {
                 Column(
                     modifier = Modifier
@@ -6851,7 +8904,7 @@ private fun FourAssetDistributionContent() {
                         .verticalScroll(rememberScrollState())
                 ) {
                     if (savedPresets.isEmpty()) {
-                        Text("저장된 4자산 분배가 없습니다.", color = TextSecondary)
+                        Text("저장된 3자산 분배가 없습니다.", color = TextSecondary)
                     } else {
                         savedPresets.forEach { preset ->
                             Row(
@@ -6864,7 +8917,7 @@ private fun FourAssetDistributionContent() {
                                         },
                                         onLongClick = {
                                             showLoadDialog = false
-                                            deletePreset = preset
+                                            renamePreset = preset
                                         }
                                     )
                                     .padding(vertical = 12.dp),
@@ -6886,11 +8939,24 @@ private fun FourAssetDistributionContent() {
         )
     }
 
+    renamePreset?.let { preset ->
+        SimulationPresetRenameDialog(
+            currentName = preset.name,
+            existingNames = savedPresets.map { it.name },
+            onDismiss = { renamePreset = null },
+            onRename = { renameSavedPreset(preset, it) },
+            onDelete = {
+                renamePreset = null
+                deletePreset = preset
+            }
+        )
+    }
+
     deletePreset?.let { preset ->
         AlertDialog(
             onDismissRequest = { deletePreset = null },
             containerColor = PanelColor,
-            title = { Text("4자산 분배를 삭제할까요?", color = TextPrimary, fontWeight = FontWeight.ExtraBold) },
+            title = { Text("3자산 분배를 삭제할까요?", color = TextPrimary, fontWeight = FontWeight.ExtraBold) },
             text = { Text("${preset.name} 항목을 삭제합니다.", color = TextSecondary) },
             confirmButton = {
                 TextButton(onClick = {
@@ -6910,7 +8976,7 @@ private fun FourAssetDistributionContent() {
 @Composable
 private fun FourAssetResultContent(result: FourAssetRetirementResult) {
     BacktestCard {
-        SectionTitle("4자산 분배 결과")
+        SectionTitle("3자산 분배 결과")
         Spacer(modifier = Modifier.height(12.dp))
         SelfDividendSummaryBox("20년 뒤 최종 자산", formatWon(result.finalAssetWon), modifier = Modifier.fillMaxWidth())
         Spacer(modifier = Modifier.height(14.dp))
@@ -7086,6 +9152,7 @@ private fun FourAssetReportTable(rows: List<FourAssetAnnualRow>) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text("${row.year}년", color = TextPrimary, fontSize = 13.sp, fontWeight = FontWeight.ExtraBold, modifier = Modifier.width(44.dp))
                     Text(formatEokWon(row.totalAssetWon), color = TextPrimary, fontSize = 13.sp, fontWeight = FontWeight.ExtraBold, modifier = Modifier.weight(1f), textAlign = TextAlign.End)
+                    Text(formatManWon(row.grossAnnualDividendWon), color = TextSecondary, fontSize = 12.sp, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f), textAlign = TextAlign.End)
                     Text(formatManWon(row.netAnnualDividendWon), color = BrandGreen, fontSize = 12.sp, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f), textAlign = TextAlign.End)
                     Text(formatManWon(row.annualExpenseWon), color = PositiveRed, fontSize = 12.sp, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f), textAlign = TextAlign.End)
                 }
@@ -7113,6 +9180,7 @@ private fun FourAssetReportHeader() {
     ) {
         Text("연차", color = TextSecondary, fontSize = 12.sp, fontWeight = FontWeight.Bold, modifier = Modifier.width(44.dp), textAlign = TextAlign.Center)
         Text("총 자산", color = TextSecondary, fontSize = 12.sp, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f), textAlign = TextAlign.End)
+        Text("세전배당", color = TextSecondary, fontSize = 12.sp, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f), textAlign = TextAlign.End)
         Text("세후배당", color = TextSecondary, fontSize = 12.sp, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f), textAlign = TextAlign.End)
         Text("생활비", color = TextSecondary, fontSize = 12.sp, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f), textAlign = TextAlign.End)
     }
@@ -7213,156 +9281,35 @@ private fun FourAssetQuickButton(text: String, active: Boolean, modifier: Modifi
     }
 }
 
-private fun calculateFourAssetRetirement(input: FourAssetRetirementInput): FourAssetRetirementResult {
-    val initSchdVal = input.totalCapitalWon * input.allocation.schd
-    val initJepqVal = input.totalCapitalWon * input.allocation.jepq
-    val initQldVal = input.totalCapitalWon * input.allocation.qld
-    var cashVal = input.totalCapitalWon * input.allocation.cash
+private fun calculateFourAssetRetirement(input: FourAssetRetirementInput): FourAssetRetirementResult =
+    ThreeAssetRetirementEngine.calculate(input)
 
-    val schdShares = initSchdVal / input.exchangeRate / input.schdPrice
-    val jepqShares = initJepqVal / input.exchangeRate / input.jepqPrice
-    val qldShares = initQldVal / input.exchangeRate / input.qldPrice
-
-    var schdMultiplier = 1.0
-    var jepqMultiplier = 1.0
-    var qldMultiplier = 1.0
-    var annualExpense = input.monthlyExpenseWon * 12.0
-    var cashDepletedYear: Int? = null
-    var hasSoldStocks = false
-    var finalYearTotal = 0.0
-    var currentPriceSchd = input.schdPrice
-    var currentPriceJepq = input.jepqPrice
-    var currentPriceQld = input.qldPrice
-    val rows = mutableListOf<FourAssetAnnualRow>()
-
-    for (year in 1..20) {
-        if (input.stressTestEnabled && year == 1) {
-            currentPriceSchd = input.schdPrice * 0.7
-            currentPriceJepq = input.jepqPrice * 0.7
-            currentPriceQld = input.qldPrice * 0.4
-        } else if (input.stressTestEnabled && year <= 3) {
-            currentPriceSchd = currentPriceSchd
-            currentPriceJepq = currentPriceJepq
-            currentPriceQld = currentPriceQld
-        } else {
-            currentPriceSchd *= (1.0 + input.schdPriceGrowth)
-            currentPriceJepq *= (1.0 + input.jepqPriceGrowth)
-            currentPriceQld *= (1.0 + input.qldPriceGrowth)
-        }
-
-        var schdVal = schdShares * schdMultiplier * currentPriceSchd * input.exchangeRate
-        var jepqVal = jepqShares * jepqMultiplier * currentPriceJepq * input.exchangeRate
-        var qldVal = qldShares * qldMultiplier * currentPriceQld * input.exchangeRate
-        var startCash = cashVal
-
-        val schdDividendFactor: Double
-        val jepqDividendFactor: Double
-        if (input.stressTestEnabled) {
-            if (year <= 3) {
-                schdDividendFactor = 1.0
-                jepqDividendFactor = 0.8
-            } else {
-                schdDividendFactor = (1.0 + input.schdDividendGrowth).pow((year - 3).toDouble())
-                jepqDividendFactor = (1.0 + input.jepqDividendGrowth).pow((year - 3).toDouble())
-            }
-        } else {
-            schdDividendFactor = (1.0 + input.schdDividendGrowth).pow((year - 1).toDouble())
-            jepqDividendFactor = (1.0 + input.jepqDividendGrowth).pow((year - 1).toDouble())
-        }
-
-        val rawSchdDividend = schdShares * schdMultiplier * (input.schdPrice * input.schdYield * schdDividendFactor) * input.exchangeRate
-        val rawJepqDividend = jepqShares * jepqMultiplier * (input.jepqPrice * input.jepqYield * jepqDividendFactor) * input.exchangeRate
-        val rawCashInterest = startCash.coerceAtLeast(0.0) * input.cashYield
-        val netDividend = (rawSchdDividend + rawJepqDividend + rawCashInterest) * (1.0 - input.taxAndInsuranceRate)
-        val shortfall = annualExpense - netDividend
-        var action = ""
-
-        if (shortfall > 0.0) {
-            if (startCash >= shortfall) {
-                startCash -= shortfall
-                action = "현금인출: ${formatManWon(shortfall.roundToLong())}"
-            } else {
-                var remainShortfall = shortfall - startCash
-                val cashDrawn = startCash
-                startCash = 0.0
-                if (cashDepletedYear == null) cashDepletedYear = year
-
-                if (schdVal >= remainShortfall && schdVal > 0.0) {
-                    schdMultiplier *= (1.0 - remainShortfall / schdVal)
-                    schdVal -= remainShortfall
-                    hasSoldStocks = true
-                    action = "현금인출: ${formatManWon(cashDrawn.roundToLong())} / SCHD 매도: ${formatManWon(remainShortfall.roundToLong())}"
-                } else {
-                    remainShortfall -= schdVal
-                    val schdDrawn = schdVal
-                    schdMultiplier = 0.0
-                    schdVal = 0.0
-                    hasSoldStocks = true
-
-                    if (jepqVal >= remainShortfall && jepqVal > 0.0) {
-                        jepqMultiplier *= (1.0 - remainShortfall / jepqVal)
-                        jepqVal -= remainShortfall
-                        action = "SCHD 전액매도: ${formatManWon(schdDrawn.roundToLong())} / JEPQ 매도: ${formatManWon(remainShortfall.roundToLong())}"
-                    } else {
-                        remainShortfall -= jepqVal
-                        val jepqDrawn = jepqVal
-                        jepqMultiplier = 0.0
-                        jepqVal = 0.0
-
-                        if (qldVal >= remainShortfall && qldVal > 0.0) {
-                            qldMultiplier *= (1.0 - remainShortfall / qldVal)
-                            qldVal -= remainShortfall
-                            action = "JEPQ 전액매도: ${formatManWon(jepqDrawn.roundToLong())} / QLD 매도: ${formatManWon(remainShortfall.roundToLong())}"
-                        } else {
-                            qldMultiplier = 0.0
-                            qldVal = 0.0
-                            action = "계좌 파산"
-                        }
-                    }
-                }
-            }
-        } else {
-            val surplus = kotlin.math.abs(shortfall)
-            startCash += surplus
-            action = "버퍼 재적립: ${formatManWon(surplus.roundToLong())}"
-        }
-
-        cashVal = startCash
-        val endTotal = schdVal + jepqVal + qldVal + cashVal
-        finalYearTotal = endTotal
-        rows += FourAssetAnnualRow(
-            year = year,
-            schdAssetWon = schdVal.roundToLong().coerceAtLeast(0L),
-            jepqAssetWon = jepqVal.roundToLong().coerceAtLeast(0L),
-            qldAssetWon = qldVal.roundToLong().coerceAtLeast(0L),
-            cashWon = cashVal.roundToLong().coerceAtLeast(0L),
-            netAnnualDividendWon = netDividend.roundToLong().coerceAtLeast(0L),
-            annualExpenseWon = annualExpense.roundToLong().coerceAtLeast(0L),
-            action = action,
-            totalAssetWon = endTotal.roundToLong().coerceAtLeast(0L)
-        )
-        annualExpense *= (1.0 + input.inflationRate)
-    }
-
-    val inflationTarget = input.totalCapitalWon * (1.0 + input.inflationRate).pow(20.0)
-    val realGrowthPercent = if (inflationTarget > 0.0) {
-        (finalYearTotal - inflationTarget) / inflationTarget * 100.0
-    } else {
-        0.0
-    }
-    val finalAsset = finalYearTotal.roundToLong().coerceAtLeast(0L)
-
-    return FourAssetRetirementResult(
-        initialSchdShares = schdShares,
-        initialJepqShares = jepqShares,
-        initialQldShares = qldShares,
-        cashDepletedYear = cashDepletedYear,
-        finalAssetWon = finalAsset,
-        inflationTargetWon = inflationTarget.roundToLong().coerceAtLeast(0L),
-        realGrowthPercent = realGrowthPercent,
-        rows = rows
+private fun fourAssetRetirementInput(preset: FourAssetDistributionPreset): FourAssetRetirementInput =
+    FourAssetRetirementInput(
+        totalCapitalWon = eokInputToWon(preset.totalCapitalEok),
+        monthlyExpenseWon = manInputToWon(preset.monthlyExpenseMan),
+        allocation = FourAssetAllocation(
+            schd = preset.appliedSchdRatio / 100.0,
+            jepq = preset.appliedJepqRatio / 100.0,
+            qld = preset.appliedQldRatio / 100.0,
+            cash = 0.0
+        ),
+        exchangeRate = (preset.exchangeRate.toDoubleOrNull() ?: 1600.0).coerceAtLeast(1.0),
+        schdPrice = (preset.schdPrice.toDoubleOrNull() ?: 80.0).coerceAtLeast(0.1),
+        jepqPrice = (preset.jepqPrice.toDoubleOrNull() ?: 50.0).coerceAtLeast(0.1),
+        qldPrice = (preset.qldPrice.toDoubleOrNull() ?: 90.0).coerceAtLeast(0.1),
+        schdYield = (preset.schdYield.toDoubleOrNull() ?: 3.0) / 100.0,
+        schdDividendGrowth = (preset.schdDividendGrowth.toDoubleOrNull() ?: 6.0) / 100.0,
+        schdPriceGrowth = (preset.schdPriceGrowth.toDoubleOrNull() ?: 5.0) / 100.0,
+        jepqYield = (preset.jepqYield.toDoubleOrNull() ?: 8.0) / 100.0,
+        jepqDividendGrowth = (preset.jepqDividendGrowth.toDoubleOrNull() ?: 2.0) / 100.0,
+        jepqPriceGrowth = (preset.jepqPriceGrowth.toDoubleOrNull() ?: 2.0) / 100.0,
+        qldPriceGrowth = (preset.qldPriceGrowth.toDoubleOrNull() ?: 15.0) / 100.0,
+        cashYield = 0.0,
+        inflationRate = (preset.inflationRate.toDoubleOrNull() ?: 3.0) / 100.0,
+        taxAndInsuranceRate = (preset.taxAndInsuranceRate.toDoubleOrNull() ?: 23.4) / 100.0,
+        stressTestEnabled = preset.stressTestEnabled
     )
-}
 
 private fun fourAssetChartIndexForOffset(x: Float, width: Float, count: Int): Int {
     if (count <= 1) return 0
@@ -7397,10 +9344,20 @@ private fun sanitizeDecimalInput(value: String, allowNegative: Boolean = false):
 }
 
 private fun formatEokWon(value: Long): String =
-    if (value <= 0L) "0.00억" else "${String.format(Locale.US, "%.2f", value / 100_000_000.0)}억"
+    if (DisplayCurrency == CurrencyMode.USD) {
+        CurrencyDisplayFormatter.formatCompact(value, DisplayUsdKrw, true)
+    } else if (value <= 0L) {
+        "0.00억"
+    } else {
+        "${String.format(Locale.US, "%.2f", value / 100_000_000.0)}억"
+    }
 
 private fun formatManWon(value: Long): String =
-    "${NumberFormat.getNumberInstance(Locale.KOREA).format((value / 10_000.0).roundToLong())}만"
+    if (DisplayCurrency == CurrencyMode.USD) {
+        CurrencyDisplayFormatter.formatCompact(value, DisplayUsdKrw, true)
+    } else {
+        "${NumberFormat.getNumberInstance(Locale.KOREA).format((value / 10_000.0).roundToLong())}만"
+    }
 
 @Composable
 private fun SelfDividendProjectionResult(rows: List<SelfDividendProjectionRow>) {
@@ -7449,9 +9406,10 @@ private fun SelfDividendProjectionResult(rows: List<SelfDividendProjectionRow>) 
 @Composable
 private fun SelfDividendProjectionChart(rows: List<SelfDividendProjectionRow>) {
     val labels = rows.map { "${it.year}년" }
-    val values = rows.map { it.totalAsset.toDouble() }
+    val maxValue = rows.maxOfOrNull { it.totalAsset }?.coerceAtLeast(1L) ?: 1L
     val lastTotalAsset = rows.lastOrNull()?.totalAsset ?: 0L
     val totalTax = rows.sumOf { it.capitalGainsTax }
+    var selectedIndex by remember(rows) { mutableStateOf<Int?>(null) }
     val statusText = when {
         lastTotalAsset <= 0L -> "자산 고갈 위험"
         rows.any { it.annualTakeHome <= 0L } -> "인출 실패"
@@ -7476,31 +9434,85 @@ private fun SelfDividendProjectionChart(rows: List<SelfDividendProjectionRow>) {
             Text(statusText, color = statusColor, fontSize = 12.sp, fontWeight = FontWeight.ExtraBold)
         }
         Spacer(modifier = Modifier.height(12.dp))
-        BacktestLegend(color = PositiveRed)
+        Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
+            FourAssetLegend("세후 총자산", PositiveRed)
+        }
         Spacer(modifier = Modifier.height(8.dp))
-        var selectedIndex by remember(values) { mutableStateOf<Int?>(null) }
-        Box(
+        Canvas(
             modifier = Modifier
                 .fillMaxWidth()
-                .height(250.dp)
-                .pointerInput(values, labels) {
+                .height(230.dp)
+                .pointerInput(rows) {
                     detectTapGestures { offset ->
-                        if (values.isNotEmpty()) {
-                            selectedIndex = backtestChartIndexForOffset(offset.x, size.width.toFloat(), values.size)
+                        if (rows.isNotEmpty()) {
+                            selectedIndex = fourAssetChartIndexForOffset(offset.x, size.width.toFloat(), rows.size)
                         }
                     }
                 }
         ) {
-            DetailedBacktestLineChart(
-                values = values,
-                labels = labels,
-                color = PositiveRed,
-                yAxisLabel = { formatAxisWon(it) },
-                chartType = BacktestChartType.ASSET,
-                selectedIndex = selectedIndex,
-                valueLabel = { formatWon(it.roundToLong()) },
-                modifier = Modifier.fillMaxSize()
-            )
+            if (rows.isEmpty()) return@Canvas
+            val left = 58f
+            val right = size.width - 8f
+            val top = 12f
+            val bottom = size.height - 34f
+            val chartWidth = (right - left).coerceAtLeast(1f)
+            val chartHeight = (bottom - top).coerceAtLeast(1f)
+            val labelPaint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
+                color = TextSecondary.toArgb()
+                textSize = 20f
+                textAlign = android.graphics.Paint.Align.RIGHT
+            }
+            val xPaint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
+                color = TextSecondary.toArgb()
+                textSize = 18f
+                textAlign = android.graphics.Paint.Align.CENTER
+            }
+
+            repeat(4) { index ->
+                val ratio = index / 3f
+                val y = top + chartHeight * ratio
+                val value = maxValue * (1f - ratio)
+                drawLine(LineColor, Offset(left, y), Offset(right, y), strokeWidth = 1.2f)
+                drawContext.canvas.nativeCanvas.drawText(
+                    "${(value / 100_000_000f).roundToInt()}억",
+                    left - 8f,
+                    y + 7f,
+                    labelPaint
+                )
+            }
+
+            val slot = chartWidth / rows.size.coerceAtLeast(1)
+            val barWidth = (slot * 0.58f).coerceAtLeast(4f)
+            rows.forEachIndexed { index, row ->
+                val x = left + slot * index + (slot - barWidth) / 2f
+                val height = (row.totalAsset.toDouble() / maxValue.toDouble() * chartHeight)
+                    .toFloat()
+                    .coerceAtLeast(0f)
+                val y = bottom - height
+                if (height > 0f) {
+                    drawRect(
+                        color = PositiveRed,
+                        topLeft = Offset(x, y),
+                        size = androidx.compose.ui.geometry.Size(barWidth, height)
+                    )
+                }
+                if (index == 0 || index == 9 || index == rows.lastIndex) {
+                    drawContext.canvas.nativeCanvas.drawText(
+                        "${row.year}년",
+                        x + barWidth / 2f,
+                        bottom + 25f,
+                        xPaint
+                    )
+                }
+            }
+
+            selectedIndex?.let { selected ->
+                val row = rows.getOrNull(selected) ?: return@let
+                val x = left + slot * selected + slot / 2f
+                val y = bottom - (row.totalAsset.toDouble() / maxValue.toDouble() * chartHeight).toFloat()
+                drawLine(TextPrimary.copy(alpha = 0.7f), Offset(x, top), Offset(x, bottom), strokeWidth = 2f)
+                drawCircle(TextPrimary, radius = 4.5f, center = Offset(x, y))
+            }
         }
         selectedIndex?.let { index ->
             rows.getOrNull(index)?.let { row ->
@@ -7561,136 +9573,23 @@ private fun SelfDividendSummaryBox(label: String, value: String, modifier: Modif
 }
 
 private fun calculateSelfDividendProjection(context: Context, assets: List<SelfDividendAssetUi>): List<SelfDividendProjectionRow> {
-    val lots = assets.mapNotNull { asset ->
+    val inputs = assets.mapNotNull { asset ->
         val investment = digitsToLong(asset.investmentAmount)
         val withdrawal = digitsToLong(asset.annualWithdrawal)
         if (investment <= 0L || withdrawal <= 0L) {
             null
         } else {
             val downloadedReturn = selfDividendDownloadedAnnualReturn(context, asset.ticker)
-            SelfDividendLotState(
+            SelfDividendAssetInput(
                 taxable = asset.taxMode == "해외직투 양도세",
                 expectedAnnualReturn = (downloadedReturn ?: selfDividendExpectedAnnualReturn(asset.ticker)).coerceAtLeast(-0.99),
+                investmentAmount = investment.toDouble(),
                 baseAnnualWithdrawal = withdrawal.toDouble(),
-                withdrawalGrowthRate = ((asset.withdrawalGrowthRate.toDoubleOrNull() ?: 0.0) / 100.0),
-                assetValue = investment.toDouble(),
-                remainingCostBasis = investment.toDouble()
+                withdrawalGrowthRate = (asset.withdrawalGrowthRate.toDoubleOrNull() ?: 0.0) / 100.0
             )
         }
     }
-    if (lots.isEmpty()) return emptyList()
-
-    val rows = mutableListOf<SelfDividendProjectionRow>()
-
-    repeat(20) { index ->
-        val year = index + 1
-        lots.forEach { lot ->
-            lot.assetValue *= (1.0 + lot.expectedAnnualReturn)
-        }
-
-        val assetBeforeWithdrawal = lots.sumOf { it.assetValue }
-        val annualWithdrawal = lots.sumOf { lot ->
-            lot.baseAnnualWithdrawal * (1.0 + lot.withdrawalGrowthRate).pow(index)
-        }
-        val saleEstimate = estimateSelfDividendSale(lots, annualWithdrawal)
-        applySelfDividendSale(lots, saleEstimate.grossSale)
-
-        val actualNetWithdrawal = saleEstimate.netProceeds
-        val monthlyTakeHome = (actualNetWithdrawal / 12.0).roundToLong()
-        val note = when {
-            saleEstimate.grossSale <= 0.0 -> "인출 없음"
-            actualNetWithdrawal < annualWithdrawal * 0.999 -> "자산 소진으로 목표 인출액 일부만 지급"
-            saleEstimate.capitalGainsTax > 0.0 -> "실현차익 ${formatWon(saleEstimate.realizedGain.roundToLong())}에서 기본공제 250만원 적용"
-            saleEstimate.realizedGain > 0.0 -> "실현차익 ${formatWon(saleEstimate.realizedGain.roundToLong())}이 기본공제 250만원 이하"
-            else -> "실현손익 ${formatWon(saleEstimate.realizedGain.roundToLong())}로 양도세 없음"
-        }
-
-        rows.add(
-            SelfDividendProjectionRow(
-                year = year,
-                monthlyTakeHome = monthlyTakeHome,
-                annualTakeHome = actualNetWithdrawal.roundToLong(),
-                assetBeforeWithdrawal = assetBeforeWithdrawal.roundToLong(),
-                grossSale = saleEstimate.grossSale.roundToLong(),
-                realizedGain = saleEstimate.realizedGain.roundToLong(),
-                capitalGainsTax = saleEstimate.capitalGainsTax.roundToLong(),
-                totalAsset = lots.sumOf { it.assetValue }.roundToLong(),
-                remainingCostBasis = lots.sumOf { it.remainingCostBasis }.roundToLong(),
-                note = note
-            )
-        )
-    }
-    return rows
-}
-
-private fun estimateSelfDividendSale(lots: List<SelfDividendLotState>, targetNetWithdrawal: Double): SelfDividendSaleEstimate {
-    val totalAsset = lots.sumOf { it.assetValue }.coerceAtLeast(0.0)
-    if (targetNetWithdrawal <= 0.0 || totalAsset <= 0.0) {
-        return SelfDividendSaleEstimate(0.0, 0.0, 0.0, 0.0)
-    }
-
-    val fullSaleTax = calculateSelfDividendTax(lots, totalAsset)
-    val fullSaleNet = totalAsset - fullSaleTax.capitalGainsTax
-    if (fullSaleNet <= targetNetWithdrawal) {
-        return SelfDividendSaleEstimate(
-            grossSale = totalAsset,
-            netProceeds = fullSaleNet.coerceAtLeast(0.0),
-            realizedGain = fullSaleTax.realizedGain,
-            capitalGainsTax = fullSaleTax.capitalGainsTax
-        )
-    }
-
-    var low = 0.0
-    var high = totalAsset
-    repeat(80) {
-        val mid = (low + high) / 2.0
-        val tax = calculateSelfDividendTax(lots, mid)
-        val netProceeds = mid - tax.capitalGainsTax
-        if (netProceeds >= targetNetWithdrawal) high = mid else low = mid
-    }
-
-    val tax = calculateSelfDividendTax(lots, high)
-    return SelfDividendSaleEstimate(
-        grossSale = high,
-        netProceeds = (high - tax.capitalGainsTax).coerceAtLeast(0.0),
-        realizedGain = tax.realizedGain,
-        capitalGainsTax = tax.capitalGainsTax
-    )
-}
-
-private fun calculateSelfDividendTax(lots: List<SelfDividendLotState>, saleAmount: Double): SelfDividendSaleEstimate {
-    val totalAsset = lots.sumOf { it.assetValue }
-    if (saleAmount <= 0.0 || totalAsset <= 0.0) {
-        return SelfDividendSaleEstimate(0.0, 0.0, 0.0, 0.0)
-    }
-
-    var realizedGain = 0.0
-    lots.forEach { lot ->
-        if (!lot.taxable || lot.assetValue <= 0.0) return@forEach
-        val saleFromLot = saleAmount * lot.assetValue / totalAsset
-        val unrealizedGain = lot.assetValue - lot.remainingCostBasis
-        realizedGain += saleFromLot * unrealizedGain / lot.assetValue
-    }
-
-    val capitalGainsTax = (realizedGain - OverseasStockAnnualBasicDeduction)
-        .coerceAtLeast(0.0) * OverseasStockCapitalGainsTaxRate
-    return SelfDividendSaleEstimate(
-        grossSale = saleAmount,
-        netProceeds = saleAmount - capitalGainsTax,
-        realizedGain = realizedGain,
-        capitalGainsTax = capitalGainsTax
-    )
-}
-
-private fun applySelfDividendSale(lots: List<SelfDividendLotState>, saleAmount: Double) {
-    val totalAsset = lots.sumOf { it.assetValue }
-    if (saleAmount <= 0.0 || totalAsset <= 0.0) return
-
-    val saleRatio = (saleAmount / totalAsset).coerceIn(0.0, 1.0)
-    lots.forEach { lot ->
-        lot.assetValue = (lot.assetValue * (1.0 - saleRatio)).coerceAtLeast(0.0)
-        lot.remainingCostBasis = (lot.remainingCostBasis * (1.0 - saleRatio)).coerceAtLeast(0.0)
-    }
+    return SelfDividendEngine.calculate(inputs)
 }
 
 private fun selfDividendExpectedAnnualReturn(ticker: String): Double =
@@ -11177,6 +13076,81 @@ private fun saveHistoricalSeries(context: Context, symbol: String, points: List<
         .apply()
 }
 
+private fun loadVolatilityHistoricalSeries(context: Context, symbol: String): List<HistoricalPoint> {
+    val key = symbol.trim().uppercase(Locale.US)
+    val raw = context.getSharedPreferences(VolatilityHistoryPreferences, Context.MODE_PRIVATE)
+        .getString(key, null)
+        ?: return emptyList()
+    return runCatching {
+        val array = JSONArray(raw)
+        (0 until array.length()).mapNotNull { index ->
+            val item = array.optJSONObject(index) ?: return@mapNotNull null
+            HistoricalPoint(item.optString("date"), item.optDouble("close"))
+                .takeIf { it.date.isNotBlank() && it.close > 0.0 }
+        }.sortedBy { it.date }
+    }.getOrDefault(emptyList())
+}
+
+private fun saveVolatilityHistoricalSeries(context: Context, symbol: String, points: List<HistoricalPoint>) {
+    val key = symbol.trim().uppercase(Locale.US)
+    val array = JSONArray()
+    points.filter { it.date.isNotBlank() && it.close > 0.0 }
+        .distinctBy { it.date }
+        .sortedBy { it.date }
+        .forEach { point ->
+            array.put(JSONObject().apply {
+                put("date", point.date)
+                put("close", point.close)
+            })
+        }
+    context.getSharedPreferences(VolatilityHistoryPreferences, Context.MODE_PRIVATE)
+        .edit()
+        .putString(key, array.toString())
+        .apply()
+    context.getSharedPreferences(VolatilityHistoryMetaPreferences, Context.MODE_PRIVATE)
+        .edit()
+        .putLong(key, System.currentTimeMillis())
+        .apply()
+}
+
+private suspend fun loadHistoricalVolatility(
+    context: Context,
+    candidate: ScenarioComparisonCandidate
+): HistoricalVolatilityEstimate? {
+    val allocations = candidate.historicalAllocations
+        .filter { it.ticker.isNotBlank() && it.weight > 0.0 }
+    if (allocations.isEmpty()) return null
+
+    val priceHistory = mutableMapOf<String, List<HistoricalPricePoint>>()
+    allocations.map { it.ticker.trim().uppercase(Locale.US) }.distinct().forEach { ticker ->
+        val cached = loadVolatilityHistoricalSeries(context, ticker)
+        val cachedAt = context.getSharedPreferences(VolatilityHistoryMetaPreferences, Context.MODE_PRIVATE)
+            .getLong(ticker, 0L)
+        val cacheIsFresh = cached.size >= 13 &&
+            System.currentTimeMillis() - cachedAt < VolatilityHistoryCacheMs
+        val downloaded = if (cacheIsFresh) {
+            emptyList()
+        } else {
+            runCatching { downloadYahooHistoricalSeries(ticker, HistoryInterval.MONTHLY) }
+                .getOrDefault(emptyList())
+        }
+        val points = when {
+            downloaded.size >= 2 -> downloaded.also {
+                saveVolatilityHistoricalSeries(context, ticker, it)
+                mergeHistoricalSeries(context, ticker, it)
+            }
+            cached.isNotEmpty() -> cached
+            else -> loadHistoricalSeries(context, ticker)
+        }
+        priceHistory[ticker] = points.mapNotNull { point ->
+            runCatching { LocalDate.parse(point.date) }.getOrNull()?.let { date ->
+                HistoricalPricePoint(date, point.close)
+            }
+        }
+    }
+    return HistoricalVolatilityEngine.calculate(allocations, priceHistory)
+}
+
 private fun mergeHistoricalSeries(context: Context, symbol: String, newPoints: List<HistoricalPoint>): List<HistoricalPoint> {
     val merged = (loadHistoricalSeries(context, symbol) + newPoints)
         .filter { it.date.isNotBlank() && it.close > 0.0 }
@@ -11802,6 +13776,32 @@ private fun displayModeLabel(mode: String): String = when (mode) {
     else -> "시스템"
 }
 
+private fun protectionModeLabel(mode: ProtectionMode): String = when (mode) {
+    ProtectionMode.NORMAL -> "일반 모드"
+    ProtectionMode.WEAK -> "약한 보호 모드"
+    ProtectionMode.MEDIUM -> "중간 보호 모드"
+    ProtectionMode.STRONG -> "강한 보호 모드"
+}
+
+private fun protectionModeDescription(mode: ProtectionMode): String = when (mode) {
+    ProtectionMode.NORMAL -> "보호 모드를 적용하지 않습니다."
+    ProtectionMode.WEAK -> "10분 대기 · 하루 24회 · 앱을 나가면 다시 잠금"
+    ProtectionMode.MEDIUM -> "1시간 대기 · 하루 12회 · 투자 원칙 문장 입력"
+    ProtectionMode.STRONG -> "4시간 대기 · 하루 2회 · 등록 QR 코드 스캔"
+}
+
+private fun formatProtectionCountdown(milliseconds: Long): String {
+    val totalSeconds = ((milliseconds + 999L) / 1_000L).coerceAtLeast(0L)
+    val hours = totalSeconds / 3_600L
+    val minutes = totalSeconds % 3_600L / 60L
+    val seconds = totalSeconds % 60L
+    return if (hours > 0L) {
+        "%02d:%02d:%02d".format(Locale.US, hours, minutes, seconds)
+    } else {
+        "%02d:%02d".format(Locale.US, minutes, seconds)
+    }
+}
+
 private fun currencyLabel(currency: String): String = when (currency) {
     CurrencyMode.USD -> "달러"
     else -> "원"
@@ -12147,7 +14147,9 @@ private const val AppBackupVersion = 1
 private val BackupPreferenceNames = listOf(
     "long_run_portfolio",
     "long_run_history",
-    "long_run_dividend_history"
+    "long_run_dividend_history",
+    VolatilityHistoryPreferences,
+    ProtectionStore.PreferencesName
 )
 
 private val BackupExcludedKeys = setOf(
@@ -12157,7 +14159,9 @@ private val BackupExcludedKeys = setOf(
     "kiwoom_access_token_expires_at",
     "kis_access_token",
     "kis_access_token_app_key",
-    "kis_access_token_expires_at"
+    "kis_access_token_expires_at",
+    ProtectionStore.UsageDateKey,
+    ProtectionStore.UsageCountKey
 )
 
 private data class BackupResult(val success: Boolean, val message: String)
@@ -12264,6 +14268,259 @@ private fun restorePreferenceFromJson(context: Context, name: String, json: JSON
         }
     }
     editor.apply()
+}
+
+private const val SimulationPreferenceName = "long_run_portfolio"
+private const val LastBacktestPresetKey = "last_backtest_preset"
+private const val LastDividendPresetKey = "last_dividend_preset"
+private const val LastDividendChartUpdateSnapshotKey = "last_dividend_chart_update_snapshot"
+private const val LastSelfDividendPresetKey = "last_self_dividend_preset"
+private const val LastFourAssetDistributionPresetKey = "last_four_asset_distribution_preset"
+private const val RetirementSuccessSnapshotKey = "retirement_success_snapshot"
+private const val ScenarioComparisonSelectionKey = "scenario_comparison_selection"
+private const val ScenarioComparisonMetricKey = "scenario_comparison_metric"
+private const val RetirementSuccessSelectionKey = "retirement_success_selection"
+
+private fun loadScenarioComparisonSelection(context: Context): Set<String> =
+    context.getSharedPreferences(SimulationPreferenceName, Context.MODE_PRIVATE)
+        .getStringSet(ScenarioComparisonSelectionKey, emptySet())
+        ?.toSet()
+        .orEmpty()
+
+private fun saveScenarioComparisonSelection(context: Context, ids: Set<String>) {
+    context.getSharedPreferences(SimulationPreferenceName, Context.MODE_PRIVATE)
+        .edit()
+        .putStringSet(ScenarioComparisonSelectionKey, ids)
+        .apply()
+}
+
+private fun loadRetirementSuccessSelection(context: Context): Set<String> =
+    context.getSharedPreferences(SimulationPreferenceName, Context.MODE_PRIVATE)
+        .getStringSet(RetirementSuccessSelectionKey, emptySet())
+        ?.toSet()
+        .orEmpty()
+
+private fun saveRetirementSuccessSelection(context: Context, ids: Set<String>) {
+    context.getSharedPreferences(SimulationPreferenceName, Context.MODE_PRIVATE)
+        .edit()
+        .putStringSet(RetirementSuccessSelectionKey, ids)
+        .apply()
+}
+
+private fun loadScenarioComparisonMetric(context: Context): Int =
+    context.getSharedPreferences(SimulationPreferenceName, Context.MODE_PRIVATE)
+        .getInt(ScenarioComparisonMetricKey, 0)
+        .coerceIn(0, 1)
+
+private fun saveScenarioComparisonMetric(context: Context, index: Int) {
+    context.getSharedPreferences(SimulationPreferenceName, Context.MODE_PRIVATE)
+        .edit()
+        .putInt(ScenarioComparisonMetricKey, index.coerceIn(0, 1))
+        .apply()
+}
+
+private fun loadLastSimulationJson(context: Context, key: String): JSONObject? =
+    runCatching {
+        context.getSharedPreferences(SimulationPreferenceName, Context.MODE_PRIVATE)
+            .getString(key, null)
+            ?.let(::JSONObject)
+    }.getOrNull()
+
+private fun saveLastSimulationJson(context: Context, key: String, json: JSONObject) {
+    context.getSharedPreferences(SimulationPreferenceName, Context.MODE_PRIVATE)
+        .edit()
+        .putString(key, json.toString())
+        .apply()
+}
+
+private fun loadLastBacktestPreset(context: Context): BacktestPreset? =
+    loadLastSimulationJson(context, LastBacktestPresetKey)?.let(::backtestPresetFromJson)
+
+private fun saveLastBacktestPreset(context: Context, preset: BacktestPreset) {
+    saveLastSimulationJson(context, LastBacktestPresetKey, backtestPresetToJson(preset))
+}
+
+private fun loadLastDividendPreset(context: Context): DividendSimulationPreset? =
+    loadLastSimulationJson(context, LastDividendPresetKey)?.let(::dividendPresetFromJson)
+
+private fun saveLastDividendPreset(context: Context, preset: DividendSimulationPreset) {
+    saveLastSimulationJson(context, LastDividendPresetKey, dividendPresetToJson(preset))
+}
+
+private fun loadLastDividendChartUpdateSnapshot(context: Context): DividendChartUpdateSnapshot? =
+    loadLastSimulationJson(context, LastDividendChartUpdateSnapshotKey)?.let(::dividendChartUpdateSnapshotFromJson)
+
+private fun saveLastDividendChartUpdateSnapshot(context: Context, snapshot: DividendChartUpdateSnapshot) {
+    saveLastSimulationJson(
+        context,
+        LastDividendChartUpdateSnapshotKey,
+        dividendChartUpdateSnapshotToJson(snapshot)
+    )
+}
+
+private fun dividendChartUpdateSnapshotToJson(snapshot: DividendChartUpdateSnapshot): JSONObject = JSONObject().apply {
+    put("inputKey", snapshot.inputKey)
+    put("ticker", snapshot.ticker)
+    put("targetMonthlyDividend", snapshot.targetMonthlyDividend)
+    put("dividendGrowthMetric", dividendMetricToJson(snapshot.dividendGrowthMetric))
+    put("priceGrowthMetric", dividendMetricToJson(snapshot.priceGrowthMetric))
+    put("pricePoints", dividendChartPointsToJson(snapshot.pricePoints))
+    put("growthPoints", dividendChartPointsToJson(snapshot.growthPoints))
+    put("projectionRows", dividendProjectionRowsToJson(snapshot.projectionRows))
+}
+
+private fun dividendChartUpdateSnapshotFromJson(item: JSONObject): DividendChartUpdateSnapshot =
+    DividendChartUpdateSnapshot(
+        inputKey = item.optString("inputKey", ""),
+        ticker = item.optString("ticker", "SCHD"),
+        targetMonthlyDividend = item.optLong("targetMonthlyDividend", 0L),
+        dividendGrowthMetric = dividendMetricFromJson(item.optJSONObject("dividendGrowthMetric")),
+        priceGrowthMetric = dividendMetricFromJson(item.optJSONObject("priceGrowthMetric")),
+        pricePoints = dividendChartPointsFromJson(item.optJSONArray("pricePoints")),
+        growthPoints = dividendChartPointsFromJson(item.optJSONArray("growthPoints")),
+        projectionRows = dividendProjectionRowsFromJson(item.optJSONArray("projectionRows"))
+    )
+
+private fun dividendProjectionRowsToJson(rows: List<DividendGrowthProjectionRow>): JSONArray = JSONArray().apply {
+    rows.forEach { row ->
+        put(JSONObject().apply {
+            put("year", row.year)
+            put("monthlyDividend", row.monthlyDividend)
+            put("totalAsset", row.totalAsset)
+        })
+    }
+}
+
+private fun dividendProjectionRowsFromJson(array: JSONArray?): List<DividendGrowthProjectionRow> {
+    if (array == null) return emptyList()
+    return (0 until array.length()).mapNotNull { index ->
+        array.optJSONObject(index)?.let { row ->
+            DividendGrowthProjectionRow(
+                year = row.optInt("year"),
+                monthlyDividend = row.optLong("monthlyDividend"),
+                totalAsset = row.optLong("totalAsset")
+            )
+        }
+    }
+}
+
+private fun dividendMetricToJson(metric: DividendMetricUi): JSONObject = JSONObject().apply {
+    put("label", metric.label)
+    put("value", metric.value)
+    metric.numericValue?.let { put("numericValue", it) }
+}
+
+private fun dividendMetricFromJson(item: JSONObject?): DividendMetricUi = DividendMetricUi(
+    label = item?.optString("label", "평균 성장률") ?: "평균 성장률",
+    value = item?.optString("value", "-") ?: "-",
+    numericValue = item?.takeIf { it.has("numericValue") }?.optDouble("numericValue")
+)
+
+private fun dividendChartPointsToJson(points: List<Pair<LocalDate, Double>>): JSONArray = JSONArray().apply {
+    points.forEach { (date, value) ->
+        put(JSONObject().put("date", date.toString()).put("value", value))
+    }
+}
+
+private fun dividendChartPointsFromJson(array: JSONArray?): List<Pair<LocalDate, Double>> {
+    if (array == null) return emptyList()
+    return (0 until array.length()).mapNotNull { index ->
+        array.optJSONObject(index)?.let { point ->
+            runCatching {
+                LocalDate.parse(point.optString("date")) to point.optDouble("value")
+            }.getOrNull()
+        }
+    }
+}
+
+private fun loadLastSelfDividendPreset(context: Context): SelfDividendPreset? =
+    loadLastSimulationJson(context, LastSelfDividendPresetKey)?.let(::selfDividendPresetFromJson)
+
+private fun saveLastSelfDividendPreset(context: Context, preset: SelfDividendPreset) {
+    saveLastSimulationJson(context, LastSelfDividendPresetKey, selfDividendPresetToJson(preset))
+}
+
+private fun loadLastFourAssetDistributionPreset(context: Context): FourAssetDistributionPreset? =
+    loadLastSimulationJson(context, LastFourAssetDistributionPresetKey)?.let(::fourAssetDistributionPresetFromJson)
+
+private fun saveLastFourAssetDistributionPreset(context: Context, preset: FourAssetDistributionPreset) {
+    saveLastSimulationJson(context, LastFourAssetDistributionPresetKey, fourAssetDistributionPresetToJson(preset))
+}
+
+private fun loadRetirementSuccessSnapshot(context: Context): RetirementSuccessSnapshot? =
+    loadLastSimulationJson(context, RetirementSuccessSnapshotKey)?.let(::retirementSuccessSnapshotFromJson)
+
+private fun saveRetirementSuccessSnapshot(context: Context, snapshot: RetirementSuccessSnapshot) {
+    saveLastSimulationJson(context, RetirementSuccessSnapshotKey, retirementSuccessSnapshotToJson(snapshot))
+}
+
+private fun retirementSuccessSnapshotToJson(snapshot: RetirementSuccessSnapshot): JSONObject = JSONObject().apply {
+    put("initialAssetEok", snapshot.initialAssetEok)
+    put("monthlySpendingMan", snapshot.monthlySpendingMan)
+    put("expectedReturn", snapshot.expectedReturn)
+    put("volatility", snapshot.volatility)
+    put("inflation", snapshot.inflation)
+    put("years", snapshot.years)
+    put("simulations", snapshot.simulations)
+    snapshot.result?.let { put("result", retirementSuccessResultToJson(it)) }
+}
+
+private fun retirementSuccessSnapshotFromJson(item: JSONObject): RetirementSuccessSnapshot =
+    RetirementSuccessSnapshot(
+        initialAssetEok = item.optString("initialAssetEok", "10"),
+        monthlySpendingMan = item.optString("monthlySpendingMan", "400"),
+        expectedReturn = item.optString("expectedReturn", "7"),
+        volatility = item.optString("volatility", "15"),
+        inflation = item.optString("inflation", "2.5"),
+        years = item.optString("years", "30"),
+        simulations = item.optInt("simulations", 5_000),
+        result = item.optJSONObject("result")?.let(::retirementSuccessResultFromJson)
+    )
+
+private fun retirementSuccessResultToJson(result: RetirementSuccessResult): JSONObject = JSONObject().apply {
+    put("successRatePercent", result.successRatePercent)
+    put("successfulPaths", result.successfulPaths)
+    put("simulations", result.simulations)
+    put("medianFinalAssetWon", result.medianFinalAssetWon)
+    put("lowerFinalAssetWon", result.lowerFinalAssetWon)
+    put("upperFinalAssetWon", result.upperFinalAssetWon)
+    result.medianDepletionYear?.let { put("medianDepletionYear", it) }
+    put("rows", JSONArray().apply {
+        result.rows.forEach { row ->
+            put(JSONObject().apply {
+                put("year", row.year)
+                put("survivalRatePercent", row.survivalRatePercent)
+                put("lowerAssetWon", row.lowerAssetWon)
+                put("medianAssetWon", row.medianAssetWon)
+                put("upperAssetWon", row.upperAssetWon)
+            })
+        }
+    })
+}
+
+private fun retirementSuccessResultFromJson(item: JSONObject): RetirementSuccessResult {
+    val rowsJson = item.optJSONArray("rows")
+    val rows = if (rowsJson == null) emptyList() else (0 until rowsJson.length()).mapNotNull { index ->
+        rowsJson.optJSONObject(index)?.let { row ->
+            RetirementSuccessYear(
+                year = row.optInt("year"),
+                survivalRatePercent = row.optDouble("survivalRatePercent"),
+                lowerAssetWon = row.optLong("lowerAssetWon"),
+                medianAssetWon = row.optLong("medianAssetWon"),
+                upperAssetWon = row.optLong("upperAssetWon")
+            )
+        }
+    }
+    return RetirementSuccessResult(
+        successRatePercent = item.optDouble("successRatePercent"),
+        successfulPaths = item.optInt("successfulPaths"),
+        simulations = item.optInt("simulations", 5_000),
+        medianFinalAssetWon = item.optLong("medianFinalAssetWon"),
+        lowerFinalAssetWon = item.optLong("lowerFinalAssetWon"),
+        upperFinalAssetWon = item.optLong("upperFinalAssetWon"),
+        medianDepletionYear = item.takeIf { it.has("medianDepletionYear") }?.optInt("medianDepletionYear"),
+        rows = rows
+    )
 }
 
 private fun loadSavedBacktestPresets(context: Context): List<BacktestPreset> =
@@ -12554,7 +14811,7 @@ private fun fourAssetDistributionPresetFromJson(item: JSONObject): FourAssetDist
     val qldRatio = item.optString("qldRatio", "8.7")
     val cashRatio = "0"
     return FourAssetDistributionPreset(
-        name = item.optString("name", "4자산 분배"),
+        name = item.optString("name", "3자산 분배"),
         totalCapitalEok = item.optString("totalCapitalEok", "13"),
         monthlyExpenseMan = item.optString("monthlyExpenseMan", "400"),
         schdRatio = schdRatio,
@@ -12611,6 +14868,7 @@ private fun dividendPresetToJson(preset: DividendSimulationPreset): JSONObject =
     put("showAfterTax", preset.showAfterTax)
     put("selectedPersonId", preset.selectedPersonId)
     put("people", JSONArray().apply { preset.people.forEach { put(dividendPersonToJson(it)) } })
+    put("projectionRows", dividendProjectionRowsToJson(preset.projectionRows))
 }
 
 private fun dividendPresetFromJson(item: JSONObject): DividendSimulationPreset {
@@ -12624,7 +14882,8 @@ private fun dividendPresetFromJson(item: JSONObject): DividendSimulationPreset {
         targetInput = item.optString("targetInput", "3000000"),
         showAfterTax = item.optBoolean("showAfterTax", true),
         selectedPersonId = item.optLong("selectedPersonId", people.first().id),
-        people = people
+        people = people,
+        projectionRows = dividendProjectionRowsFromJson(item.optJSONArray("projectionRows"))
     )
 }
 
@@ -12684,11 +14943,16 @@ private fun assetDisplayName(holding: HoldingUi): String =
 private fun formatAssetPrice(value: Double, ticker: String): String =
     if (isKoreanTicker(ticker)) formatWon(value.roundToLong()) else "$${formatDecimal(value)}"
 
+private fun applyCurrencyDisplay(currency: String, usdKrw: Double) {
+    DisplayCurrency = currency
+    DisplayUsdKrw = usdKrw.coerceAtLeast(1.0)
+}
+
 private fun formatWon(value: Long): String =
-    "${NumberFormat.getNumberInstance(Locale.KOREA).format(value)}원"
+    CurrencyDisplayFormatter.format(value, DisplayUsdKrw, DisplayCurrency == CurrencyMode.USD)
 
 private fun formatSignedWon(value: Long): String =
-    if (value >= 0) "+${formatWon(value)}" else "-${formatWon(-value)}"
+    CurrencyDisplayFormatter.formatSigned(value, DisplayUsdKrw, DisplayCurrency == CurrencyMode.USD)
 
 private fun formatDecimal(value: Double): String =
     NumberFormat.getNumberInstance(Locale.US).apply { maximumFractionDigits = 2 }.format(value)
