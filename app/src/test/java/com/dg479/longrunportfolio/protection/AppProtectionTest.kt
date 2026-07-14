@@ -13,7 +13,7 @@ class AppProtectionTest {
         assertEquals(60L * 60L * 1_000L, ProtectionMode.MEDIUM.waitMillis)
         assertEquals(12, ProtectionMode.MEDIUM.dailyEntryLimit)
         assertEquals(4L * 60L * 60L * 1_000L, ProtectionMode.STRONG.waitMillis)
-        assertEquals(2, ProtectionMode.STRONG.dailyEntryLimit)
+        assertEquals(4, ProtectionMode.STRONG.dailyEntryLimit)
     }
 
     @Test

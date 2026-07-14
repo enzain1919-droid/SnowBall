@@ -23,7 +23,7 @@ enum class ProtectionMode(
     NORMAL("normal", 0L, Int.MAX_VALUE, false, false),
     WEAK("weak", 10L * 60L * 1_000L, 24, false, false),
     MEDIUM("medium", 60L * 60L * 1_000L, 12, true, false),
-    STRONG("strong", 4L * 60L * 60L * 1_000L, 2, false, true);
+    STRONG("strong", 4L * 60L * 60L * 1_000L, 4, false, true);
 
     companion object {
         fun fromStorage(value: String?): ProtectionMode = entries
@@ -50,20 +50,32 @@ object ProtectionStore {
     const val PreferencesName = "snowball_protection"
     const val UsageDateKey = "protection_usage_date"
     const val UsageCountKey = "protection_usage_count"
+    const val LockStartedAtKey = "protection_lock_started_at"
+    const val OneTimeWaitBypassKey = "protection_one_time_wait_bypass"
     private const val InstallMarkerFileName = "snowball_protection_install_marker"
 
-    fun loadSettingsForAppLaunch(context: Context): ProtectionSettings {
+    fun loadSettingsForAppLaunch(
+        context: Context,
+        resetOnAppUpdate: Boolean = false
+    ): ProtectionSettings {
         val settings = loadSettings(context)
         val installMarker = File(context.noBackupFilesDir, InstallMarkerFileName)
-        if (installMarker.exists()) return settings
-
-        val firstLaunchSettings = settings.copy(mode = ProtectionMode.NORMAL)
-        saveSettings(context, firstLaunchSettings)
+        val currentInstallTime = runCatching {
+            context.packageManager.getPackageInfo(context.packageName, 0).lastUpdateTime
+        }.getOrDefault(0L)
+        val markerInstallTime = runCatching { installMarker.readText().trim().toLong() }.getOrNull()
+        val shouldResetMode = !installMarker.exists() ||
+            (resetOnAppUpdate && markerInstallTime != currentInstallTime)
+        val launchSettings = if (shouldResetMode) settings.copy(mode = ProtectionMode.NORMAL) else settings
+        if (shouldResetMode) {
+            saveSettings(context, launchSettings)
+            clearRuntimeState(context)
+        }
         runCatching {
             installMarker.parentFile?.mkdirs()
-            installMarker.createNewFile()
+            installMarker.writeText(currentInstallTime.toString())
         }
-        return firstLaunchSettings
+        return launchSettings
     }
 
     fun loadSettings(context: Context): ProtectionSettings {
@@ -117,6 +129,65 @@ object ProtectionStore {
             .putInt(UsageCountKey, updated.entryCount)
             .apply()
         return updated
+    }
+
+    fun loadLockStartedAt(context: Context, now: Long = System.currentTimeMillis()): Long {
+        val preferences = context.getSharedPreferences(PreferencesName, Context.MODE_PRIVATE)
+        val stored = preferences.getLong(LockStartedAtKey, 0L)
+        if (stored in 1..now) return stored
+        preferences.edit().putLong(LockStartedAtKey, now).apply()
+        return now
+    }
+
+    fun startNewLock(context: Context, now: Long = System.currentTimeMillis()): Long {
+        context.getSharedPreferences(PreferencesName, Context.MODE_PRIVATE)
+            .edit()
+            .putLong(LockStartedAtKey, now)
+            .apply()
+        return now
+    }
+
+    fun clearLockStartedAt(context: Context) {
+        context.getSharedPreferences(PreferencesName, Context.MODE_PRIVATE)
+            .edit()
+            .remove(LockStartedAtKey)
+            .apply()
+    }
+
+    fun armOneTimeWaitBypass(context: Context) {
+        context.getSharedPreferences(PreferencesName, Context.MODE_PRIVATE)
+            .edit()
+            .putBoolean(OneTimeWaitBypassKey, true)
+            .apply()
+    }
+
+    fun consumeOneTimeWaitBypass(context: Context): Boolean {
+        val preferences = context.getSharedPreferences(PreferencesName, Context.MODE_PRIVATE)
+        if (!preferences.getBoolean(OneTimeWaitBypassKey, false)) return false
+        preferences.edit().remove(OneTimeWaitBypassKey).apply()
+        return true
+    }
+
+    fun clearOneTimeWaitBypass(context: Context) {
+        context.getSharedPreferences(PreferencesName, Context.MODE_PRIVATE)
+            .edit()
+            .remove(OneTimeWaitBypassKey)
+            .apply()
+    }
+
+    fun resetToNormalForDevelopmentRun(context: Context) {
+        saveSettings(context, loadSettings(context).copy(mode = ProtectionMode.NORMAL))
+        clearRuntimeState(context)
+    }
+
+    private fun clearRuntimeState(context: Context) {
+        context.getSharedPreferences(PreferencesName, Context.MODE_PRIVATE)
+            .edit()
+            .remove(UsageDateKey)
+            .remove(UsageCountKey)
+            .remove(LockStartedAtKey)
+            .remove(OneTimeWaitBypassKey)
+            .apply()
     }
 }
 

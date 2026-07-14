@@ -666,10 +666,19 @@ private enum class AppRoute {
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        if (BuildConfig.DEBUG && intent.getBooleanExtra(ResetProtectionForDevelopmentRunExtra, false)) {
+            ProtectionStore.resetToNormalForDevelopmentRun(this)
+            intent.removeExtra(ResetProtectionForDevelopmentRunExtra)
+        }
         enableEdgeToEdge()
         setContent {
             LongRunApp()
         }
+    }
+
+    private companion object {
+        const val ResetProtectionForDevelopmentRunExtra =
+            "com.dg479.longrunportfolio.RESET_PROTECTION_FOR_DEVELOPMENT_RUN"
     }
 }
 
@@ -691,11 +700,19 @@ private fun LongRunApp() {
     val context = LocalContext.current
     val savedState = remember { loadAppState(context) }
     var appSettings by remember { mutableStateOf(loadAppSettings(context)) }
-    var protectionSettings by remember { mutableStateOf(ProtectionStore.loadSettingsForAppLaunch(context)) }
+    var protectionSettings by remember {
+        mutableStateOf(ProtectionStore.loadSettingsForAppLaunch(context, resetOnAppUpdate = BuildConfig.DEBUG))
+    }
     var dailyProtectionUsage by remember { mutableStateOf(ProtectionStore.loadTodayUsage(context)) }
     var isAppUnlocked by remember { mutableStateOf(protectionSettings.mode == ProtectionMode.NORMAL) }
     var showLockedSimulator by remember { mutableStateOf(false) }
-    var lockStartedAt by remember { mutableLongStateOf(System.currentTimeMillis()) }
+    var lockStartedAt by remember { mutableLongStateOf(ProtectionStore.loadLockStartedAt(context)) }
+    var bypassWaitForCurrentLock by remember {
+        mutableStateOf(
+            protectionSettings.mode != ProtectionMode.NORMAL &&
+                ProtectionStore.consumeOneTimeWaitBypass(context)
+        )
+    }
     val qrScanCoordinator = remember { QrScanCoordinator() }
     val lifecycleOwner = LocalLifecycleOwner.current
     val qrScannerLauncher = rememberLauncherForActivityResult(ScanContract()) { result ->
@@ -719,14 +736,27 @@ private fun LongRunApp() {
     }
     DisposableEffect(lifecycleOwner, protectionSettings.mode) {
         val observer = LifecycleEventObserver { _, event ->
-            if (
-                event == Lifecycle.Event.ON_STOP &&
-                protectionSettings.mode != ProtectionMode.NORMAL &&
-                !qrScanCoordinator.externalFlowActive
-            ) {
-                isAppUnlocked = false
-                showLockedSimulator = false
-                lockStartedAt = System.currentTimeMillis()
+            when (event) {
+                Lifecycle.Event.ON_START -> if (
+                    protectionSettings.mode != ProtectionMode.NORMAL &&
+                    !isAppUnlocked &&
+                    !qrScanCoordinator.externalFlowActive &&
+                    ProtectionStore.consumeOneTimeWaitBypass(context)
+                ) {
+                    bypassWaitForCurrentLock = true
+                }
+                Lifecycle.Event.ON_STOP -> if (
+                    protectionSettings.mode != ProtectionMode.NORMAL &&
+                    !qrScanCoordinator.externalFlowActive
+                ) {
+                    if (isAppUnlocked) {
+                        lockStartedAt = ProtectionStore.startNewLock(context)
+                    }
+                    isAppUnlocked = false
+                    showLockedSimulator = false
+                    bypassWaitForCurrentLock = false
+                }
+                else -> Unit
             }
         }
         lifecycleOwner.lifecycle.addObserver(observer)
@@ -805,7 +835,8 @@ private fun LongRunApp() {
                 protectionSettings = restoredProtectionSettings
                 dailyProtectionUsage = ProtectionStore.loadTodayUsage(context)
                 isAppUnlocked = restoredProtectionSettings.mode == ProtectionMode.NORMAL
-                lockStartedAt = System.currentTimeMillis()
+                lockStartedAt = ProtectionStore.startNewLock(context)
+                bypassWaitForCurrentLock = false
                 accounts.clear()
                 accounts.addAll(restoredState.accounts)
                 selectedAccountId = restoredState.accounts.firstOrNull()?.id ?: 0
@@ -900,7 +931,9 @@ private fun LongRunApp() {
             return
         }
         dailyProtectionUsage = ProtectionStore.recordEntry(context)
+        ProtectionStore.clearLockStartedAt(context)
         showLockedSimulator = false
+        bypassWaitForCurrentLock = false
         isAppUnlocked = true
     }
 
@@ -920,6 +953,7 @@ private fun LongRunApp() {
                 settings = protectionSettings,
                 dailyUsage = dailyProtectionUsage,
                 lockStartedAt = lockStartedAt,
+                bypassWait = bypassWaitForCurrentLock,
                 onUnlock = ::unlockProtectedApp,
                 onOpenSimulator = { showLockedSimulator = true },
                 onRequestQrUnlock = {
@@ -1195,6 +1229,14 @@ private fun LongRunApp() {
                     },
                     onProtectionSettingsChange = { updated ->
                         val normalized = updated.copy(investmentPrinciple = updated.investmentPrinciple.trim())
+                        val modeChanged = normalized.mode != protectionSettings.mode
+                        if (modeChanged) {
+                            if (normalized.mode == ProtectionMode.NORMAL) {
+                                ProtectionStore.clearOneTimeWaitBypass(context)
+                            } else {
+                                ProtectionStore.armOneTimeWaitBypass(context)
+                            }
+                        }
                         protectionSettings = normalized
                         ProtectionStore.saveSettings(context, normalized)
                         isAppUnlocked = true
@@ -5000,6 +5042,7 @@ private fun AppProtectionLockScreen(
     settings: ProtectionSettings,
     dailyUsage: ProtectionDailyUsage,
     lockStartedAt: Long,
+    bypassWait: Boolean,
     onUnlock: () -> Unit,
     onOpenSimulator: () -> Unit,
     onRequestQrUnlock: () -> Unit
@@ -5008,14 +5051,18 @@ private fun AppProtectionLockScreen(
     var nowMillis by remember(lockStartedAt) { mutableLongStateOf(System.currentTimeMillis()) }
     var enteredPrinciple by remember(settings.investmentPrinciple) { mutableStateOf("") }
     var principleMismatch by remember { mutableStateOf(false) }
-    LaunchedEffect(lockStartedAt) {
+    LaunchedEffect(lockStartedAt, bypassWait) {
         while (true) {
             nowMillis = System.currentTimeMillis()
             delay(1_000L)
         }
     }
 
-    val remainingMillis = (lockStartedAt + settings.mode.waitMillis - nowMillis).coerceAtLeast(0L)
+    val remainingMillis = if (bypassWait) {
+        0L
+    } else {
+        (lockStartedAt + settings.mode.waitMillis - nowMillis).coerceAtLeast(0L)
+    }
     val waitFinished = remainingMillis <= 0L
     val limitReached = dailyUsage.entryCount >= settings.mode.dailyEntryLimit
     val remainingEntries = (settings.mode.dailyEntryLimit - dailyUsage.entryCount).coerceAtLeast(0)
@@ -5043,7 +5090,11 @@ private fun AppProtectionLockScreen(
                 )
                 Spacer(modifier = Modifier.height(8.dp))
                 Text(
-                    if (waitFinished) "진입 조건을 완료해 주세요." else "이 화면을 유지하는 동안 대기 시간이 진행됩니다.",
+                    when {
+                        bypassWait -> "모드 변경 후 첫 재진입은 대기 시간이 면제됩니다."
+                        waitFinished -> "진입 조건을 완료해 주세요."
+                        else -> "앱을 닫아도 대기 시간은 계속 흐릅니다."
+                    },
                     color = TextSecondary,
                     fontSize = 13.sp,
                     textAlign = TextAlign.Center
@@ -5057,6 +5108,26 @@ private fun AppProtectionLockScreen(
                         onClick = onUnlock
                     )
                     ProtectionMode.MEDIUM -> {
+                        Text("입력할 투자 원칙", color = TextSecondary, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                        Spacer(modifier = Modifier.height(7.dp))
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(8.dp))
+                                .background(SoftSurface)
+                                .padding(horizontal = 14.dp, vertical = 13.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Text(
+                                settings.investmentPrinciple,
+                                color = TextPrimary,
+                                fontSize = 15.sp,
+                                lineHeight = 22.sp,
+                                fontWeight = FontWeight.Bold,
+                                textAlign = TextAlign.Center
+                            )
+                        }
+                        Spacer(modifier = Modifier.height(12.dp))
                         OutlinedTextField(
                             value = enteredPrinciple,
                             onValueChange = {
@@ -13787,7 +13858,7 @@ private fun protectionModeDescription(mode: ProtectionMode): String = when (mode
     ProtectionMode.NORMAL -> "보호 모드를 적용하지 않습니다."
     ProtectionMode.WEAK -> "10분 대기 · 하루 24회 · 앱을 나가면 다시 잠금"
     ProtectionMode.MEDIUM -> "1시간 대기 · 하루 12회 · 투자 원칙 문장 입력"
-    ProtectionMode.STRONG -> "4시간 대기 · 하루 2회 · 등록 QR 코드 스캔"
+    ProtectionMode.STRONG -> "4시간 대기 · 하루 4회 · 앱을 나가면 다시 잠금 · 등록 QR 코드 스캔"
 }
 
 private fun formatProtectionCountdown(milliseconds: Long): String {
@@ -14161,7 +14232,9 @@ private val BackupExcludedKeys = setOf(
     "kis_access_token_app_key",
     "kis_access_token_expires_at",
     ProtectionStore.UsageDateKey,
-    ProtectionStore.UsageCountKey
+    ProtectionStore.UsageCountKey,
+    ProtectionStore.LockStartedAtKey,
+    ProtectionStore.OneTimeWaitBypassKey
 )
 
 private data class BackupResult(val success: Boolean, val message: String)
