@@ -8,10 +8,10 @@ import org.junit.Test
 class AppProtectionTest {
     @Test
     fun modesExposeRequestedWaitAndEntryLimits() {
-        assertEquals(10L * 60L * 1_000L, ProtectionMode.WEAK.waitMillis)
-        assertEquals(24, ProtectionMode.WEAK.dailyEntryLimit)
-        assertEquals(60L * 60L * 1_000L, ProtectionMode.MEDIUM.waitMillis)
-        assertEquals(12, ProtectionMode.MEDIUM.dailyEntryLimit)
+        assertEquals(60L * 60L * 1_000L, ProtectionMode.WEAK.waitMillis)
+        assertEquals(12, ProtectionMode.WEAK.dailyEntryLimit)
+        assertEquals(4L * 60L * 60L * 1_000L, ProtectionMode.MEDIUM.waitMillis)
+        assertEquals(4, ProtectionMode.MEDIUM.dailyEntryLimit)
         assertEquals(4L * 60L * 60L * 1_000L, ProtectionMode.STRONG.waitMillis)
         assertEquals(4, ProtectionMode.STRONG.dailyEntryLimit)
     }

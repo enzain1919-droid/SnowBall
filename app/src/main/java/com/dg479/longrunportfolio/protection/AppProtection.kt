@@ -21,8 +21,8 @@ enum class ProtectionMode(
     val requiresQrOnEntry: Boolean
 ) {
     NORMAL("normal", 0L, Int.MAX_VALUE, false, false),
-    WEAK("weak", 10L * 60L * 1_000L, 24, false, false),
-    MEDIUM("medium", 60L * 60L * 1_000L, 12, true, false),
+    WEAK("weak", 60L * 60L * 1_000L, 12, false, false),
+    MEDIUM("medium", 4L * 60L * 60L * 1_000L, 4, true, false),
     STRONG("strong", 4L * 60L * 60L * 1_000L, 4, false, true);
 
     companion object {

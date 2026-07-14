@@ -4636,9 +4636,9 @@ private fun SettingsScreen(
         PlainTopBar(title = "설정", onBack = onBack, rightText = "", onRightClick = {})
         Spacer(modifier = Modifier.height(32.dp))
 
-        SettingsSectionTitle("접근 보호")
+        SettingsSectionTitle("앱 잠금")
         SettingsValueRow(
-            title = "보호 모드",
+            title = "잠금 모드",
             value = protectionModeLabel(protectionSettings.mode),
             onClick = { showProtectionSheet = true }
         )
@@ -4798,7 +4798,7 @@ private fun SettingsScreen(
                     ).show()
                     targetMode.requiresPrinciple && protectionSettings.investmentPrinciple.isBlank() -> Toast.makeText(
                         context,
-                        "중간 보호 모드에 사용할 투자 원칙 문장을 먼저 입력해 주세요.",
+                        "중간 잠금 모드에 사용할 투자 원칙 문장을 먼저 입력해 주세요.",
                         Toast.LENGTH_LONG
                     ).show()
                     else -> onRequestQrScan { content ->
@@ -4911,7 +4911,7 @@ private fun ProtectionModeSettingsSheet(
         shape = RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp)
     ) {
         Column(modifier = Modifier.fillMaxWidth().padding(horizontal = 22.dp, vertical = 8.dp)) {
-            Text("보호 모드", color = TextPrimary, fontSize = 25.sp, fontWeight = FontWeight.ExtraBold)
+            Text("잠금 모드", color = TextPrimary, fontSize = 25.sp, fontWeight = FontWeight.ExtraBold)
             Spacer(modifier = Modifier.height(6.dp))
             Text("모드 변경은 등록된 QR 코드 확인 후 적용됩니다.", color = TextSecondary, fontSize = 13.sp)
             Spacer(modifier = Modifier.height(18.dp))
@@ -4954,7 +4954,7 @@ private fun InvestmentPrincipleDialog(
         title = { Text("투자 원칙 문장", color = TextPrimary, fontWeight = FontWeight.ExtraBold) },
         text = {
             Column {
-                Text("중간 보호 모드 진입 시 동일한 문장을 직접 입력합니다.", color = TextSecondary, fontSize = 13.sp, lineHeight = 19.sp)
+                Text("중간 잠금 모드 진입 시 동일한 문장을 직접 입력합니다.", color = TextSecondary, fontSize = 13.sp, lineHeight = 19.sp)
                 Spacer(modifier = Modifier.height(12.dp))
                 OutlinedTextField(
                     value = principle,
@@ -5004,7 +5004,7 @@ private fun RegisteredQrDialog(
                 if (qrImage != null) {
                     Image(
                         bitmap = qrImage,
-                        contentDescription = "등록된 보호 모드 QR 코드",
+                        contentDescription = "등록된 잠금 모드 QR 코드",
                         modifier = Modifier
                             .size(250.dp)
                             .clip(RoundedCornerShape(8.dp))
@@ -5012,7 +5012,7 @@ private fun RegisteredQrDialog(
                             .padding(12.dp)
                     )
                     Spacer(modifier = Modifier.height(10.dp))
-                    Text("이 QR 코드가 보호 모드 인증에 사용됩니다.", color = TextSecondary, fontSize = 12.sp)
+                    Text("이 QR 코드가 잠금 모드 인증에 사용됩니다.", color = TextSecondary, fontSize = 12.sp)
                 } else {
                     Text(
                         "기존 등록은 해시만 저장되어 QR 이미지를 복원할 수 없습니다. 기존 QR을 확인한 뒤 다시 등록해 주세요.",
@@ -13849,15 +13849,15 @@ private fun displayModeLabel(mode: String): String = when (mode) {
 
 private fun protectionModeLabel(mode: ProtectionMode): String = when (mode) {
     ProtectionMode.NORMAL -> "일반 모드"
-    ProtectionMode.WEAK -> "약한 보호 모드"
-    ProtectionMode.MEDIUM -> "중간 보호 모드"
-    ProtectionMode.STRONG -> "강한 보호 모드"
+    ProtectionMode.WEAK -> "약한 잠금 모드"
+    ProtectionMode.MEDIUM -> "중간 잠금 모드"
+    ProtectionMode.STRONG -> "강한 잠금 모드"
 }
 
 private fun protectionModeDescription(mode: ProtectionMode): String = when (mode) {
-    ProtectionMode.NORMAL -> "보호 모드를 적용하지 않습니다."
-    ProtectionMode.WEAK -> "10분 대기 · 하루 24회 · 앱을 나가면 다시 잠금"
-    ProtectionMode.MEDIUM -> "1시간 대기 · 하루 12회 · 투자 원칙 문장 입력"
+    ProtectionMode.NORMAL -> "잠금 모드를 적용하지 않습니다."
+    ProtectionMode.WEAK -> "1시간 대기 · 하루 12회 · 앱을 나가면 다시 잠금"
+    ProtectionMode.MEDIUM -> "4시간 대기 · 하루 4회 · 앱을 나가면 다시 잠금 · 투자 원칙 문장 입력"
     ProtectionMode.STRONG -> "4시간 대기 · 하루 4회 · 앱을 나가면 다시 잠금 · 등록 QR 코드 스캔"
 }
 
