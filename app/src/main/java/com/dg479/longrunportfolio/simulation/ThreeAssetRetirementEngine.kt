@@ -97,21 +97,14 @@ object ThreeAssetRetirementEngine {
             var qldValue = qldShares * qldMultiplier * currentQldPrice * input.exchangeRate
             var availableCash = cashValue
 
-            val schdDividendFactor: Double
-            val jepqDividendFactor: Double
-            if (input.stressTestEnabled) {
-                if (year <= 3) {
-                    schdDividendFactor = 1.0
-                    jepqDividendFactor = 0.8
-                } else {
-                    schdDividendFactor = (1.0 + input.schdDividendGrowth).pow((year - 3).toDouble())
-                    jepqDividendFactor = (1.0 + input.jepqDividendGrowth).pow((year - 3).toDouble())
-                }
-            } else {
-                schdDividendFactor = (1.0 + input.schdDividendGrowth).pow((year - 1).toDouble())
-                jepqDividendFactor = (1.0 + input.jepqDividendGrowth).pow((year - 1).toDouble())
+            fun dividendFactor(growth: Double, cutDuringStress: Boolean): Double {
+                if (!input.stressTestEnabled) return (1.0 + growth).pow((year - 1).toDouble())
+                if (year <= 3) return if (cutDuringStress) 0.8 else 1.0
+                return (1.0 + growth).pow((year - 3).toDouble())
             }
 
+            val schdDividendFactor = dividendFactor(input.schdDividendGrowth, cutDuringStress = false)
+            val jepqDividendFactor = dividendFactor(input.jepqDividendGrowth, cutDuringStress = true)
             val grossDividend =
                 schdShares * schdMultiplier * input.schdPrice * input.schdYield * schdDividendFactor * input.exchangeRate +
                     jepqShares * jepqMultiplier * input.jepqPrice * input.jepqYield * jepqDividendFactor * input.exchangeRate +
@@ -122,54 +115,41 @@ object ThreeAssetRetirementEngine {
                 (netDividend + availableCash + schdValue + jepqValue + qldValue).coerceAtLeast(0.0)
             )
             val shortfall = annualExpense - netDividend
-            val action: String
+            val actions = mutableListOf<String>()
 
             if (shortfall > 0.0) {
-                if (availableCash >= shortfall) {
-                    availableCash -= shortfall
-                    action = "현금인출: ${formatManWon(shortfall)}"
-                } else {
-                    var remainingShortfall = shortfall - availableCash
-                    val cashDrawn = availableCash
-                    availableCash = 0.0
-                    if (cashDepletedYear == null) cashDepletedYear = year
-
-                    if (schdValue >= remainingShortfall && schdValue > 0.0) {
-                        schdMultiplier *= 1.0 - remainingShortfall / schdValue
-                        schdValue -= remainingShortfall
-                        action = "현금인출: ${formatManWon(cashDrawn)} / SCHD 매도: ${formatManWon(remainingShortfall)}"
-                    } else {
-                        remainingShortfall -= schdValue
-                        val schdDrawn = schdValue
-                        schdMultiplier = 0.0
-                        schdValue = 0.0
-
-                        if (jepqValue >= remainingShortfall && jepqValue > 0.0) {
-                            jepqMultiplier *= 1.0 - remainingShortfall / jepqValue
-                            jepqValue -= remainingShortfall
-                            action = "SCHD 전액매도: ${formatManWon(schdDrawn)} / JEPQ 매도: ${formatManWon(remainingShortfall)}"
-                        } else {
-                            remainingShortfall -= jepqValue
-                            val jepqDrawn = jepqValue
-                            jepqMultiplier = 0.0
-                            jepqValue = 0.0
-
-                            if (qldValue >= remainingShortfall && qldValue > 0.0) {
-                                qldMultiplier *= 1.0 - remainingShortfall / qldValue
-                                qldValue -= remainingShortfall
-                                action = "JEPQ 전액매도: ${formatManWon(jepqDrawn)} / QLD 매도: ${formatManWon(remainingShortfall)}"
-                            } else {
-                                qldMultiplier = 0.0
-                                qldValue = 0.0
-                                action = "계좌 파산"
-                            }
-                        }
-                    }
+                var remainingShortfall = shortfall
+                val cashDrawn = minOf(availableCash, remainingShortfall)
+                if (cashDrawn > 0.0) {
+                    availableCash -= cashDrawn
+                    remainingShortfall -= cashDrawn
+                    actions += "현금인출: ${formatManWon(cashDrawn)}"
                 }
+                if (remainingShortfall > 0.0 && cashDepletedYear == null) cashDepletedYear = year
+
+                fun sellAsset(label: String, availableValue: Double, update: (Double) -> Unit): Double {
+                    if (remainingShortfall <= 0.0 || availableValue <= 0.0) return availableValue
+                    val sale = minOf(availableValue, remainingShortfall)
+                    update(sale)
+                    remainingShortfall -= sale
+                    actions += "$label 매도: ${formatManWon(sale)}"
+                    return availableValue - sale
+                }
+
+                schdValue = sellAsset("SCHD", schdValue) { sale ->
+                    schdMultiplier *= 1.0 - sale / schdValue
+                }
+                jepqValue = sellAsset("JEPQ", jepqValue) { sale ->
+                    jepqMultiplier *= 1.0 - sale / jepqValue
+                }
+                qldValue = sellAsset("QLD", qldValue) { sale ->
+                    qldMultiplier *= 1.0 - sale / qldValue
+                }
+                if (remainingShortfall > 0.0) actions += "계좌 소진"
             } else {
                 val surplus = abs(shortfall)
                 availableCash += surplus
-                action = "버퍼 재적립: ${formatManWon(surplus)}"
+                actions += "버퍼 재적립: ${formatManWon(surplus)}"
             }
 
             cashValue = availableCash
@@ -185,7 +165,7 @@ object ThreeAssetRetirementEngine {
                 netAnnualDividendWon = netDividend.roundToLong().coerceAtLeast(0L),
                 annualExpenseWon = annualExpense.roundToLong().coerceAtLeast(0L),
                 actualAnnualCashFlowWon = actualAnnualCashFlow.roundToLong().coerceAtLeast(0L),
-                action = action,
+                action = actions.joinToString(" / "),
                 totalAssetWon = endTotal.roundToLong().coerceAtLeast(0L)
             )
             annualExpense *= 1.0 + input.inflationRate

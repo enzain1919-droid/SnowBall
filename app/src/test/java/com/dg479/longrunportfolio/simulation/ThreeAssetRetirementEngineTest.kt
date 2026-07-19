@@ -52,10 +52,28 @@ class ThreeAssetRetirementEngineTest {
         assertEquals(0L, firstYear.totalAssetWon)
     }
 
+    @Test
+    fun calculate_includesJepqDividendAndAssetValue() {
+        val result = ThreeAssetRetirementEngine.calculate(
+            input = baseInput(
+                allocation = ThreeAssetAllocation(schd = 0.0, jepq = 1.0, qld = 0.0),
+                monthlyExpenseWon = 0L,
+                jepqYield = 0.08
+            ),
+            years = 1
+        )
+
+        val firstYear = result.rows.single()
+        assertEquals(80_000_000L, firstYear.grossAnnualDividendWon)
+        assertEquals(1_080_000_000L, firstYear.totalAssetWon)
+        assertEquals(1_000_000_000L, firstYear.jepqAssetWon)
+    }
+
     private fun baseInput(
         allocation: ThreeAssetAllocation,
         monthlyExpenseWon: Long,
         schdYield: Double = 0.0,
+        jepqYield: Double = 0.0,
         stressTestEnabled: Boolean = false
     ) = ThreeAssetRetirementInput(
         totalCapitalWon = 1_000_000_000L,
@@ -68,7 +86,7 @@ class ThreeAssetRetirementEngineTest {
         schdYield = schdYield,
         schdDividendGrowth = 0.0,
         schdPriceGrowth = 0.0,
-        jepqYield = 0.0,
+        jepqYield = jepqYield,
         jepqDividendGrowth = 0.0,
         jepqPriceGrowth = 0.0,
         qldPriceGrowth = 0.0,

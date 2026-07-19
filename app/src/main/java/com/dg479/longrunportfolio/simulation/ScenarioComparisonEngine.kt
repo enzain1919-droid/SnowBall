@@ -9,7 +9,8 @@ enum class ScenarioComparisonType {
 data class ScenarioComparisonPoint(
     val year: Int,
     val monthlyCashFlowWon: Long,
-    val totalAssetWon: Long
+    val totalAssetWon: Long,
+    val annualPortfolioOutflowWon: Long = monthlyCashFlowWon * 12L
 )
 
 data class ScenarioComparisonSeries(
@@ -29,6 +30,37 @@ data class ScenarioComparisonSummary(
 )
 
 object ScenarioComparisonEngine {
+    fun fromThreeAssetRows(
+        id: String,
+        name: String,
+        rows: List<ThreeAssetAnnualRow>
+    ): ScenarioComparisonSeries = ScenarioComparisonSeries(
+        id = id,
+        name = name,
+        type = ScenarioComparisonType.THREE_ASSET,
+        points = rows.map { row ->
+            ScenarioComparisonPoint(
+                year = row.year,
+                monthlyCashFlowWon = row.netAnnualDividendWon / 12L,
+                totalAssetWon = row.totalAssetWon,
+                annualPortfolioOutflowWon = row.actualAnnualCashFlowWon
+            )
+        }
+    )
+
+    fun inferredAnnualReturnPercent(series: ScenarioComparisonSeries): Double? {
+        val annualReturns = series.points
+            .sortedBy { it.year }
+            .zipWithNext()
+            .mapNotNull { (previous, current) ->
+                if (previous.totalAssetWon <= 0L) return@mapNotNull null
+                ((current.totalAssetWon + current.annualPortfolioOutflowWon) /
+                    previous.totalAssetWon.toDouble() - 1.0)
+                    .takeIf { it.isFinite() }
+            }
+        return annualReturns.average().takeIf { it.isFinite() }?.times(100.0)
+    }
+
     fun summarize(series: ScenarioComparisonSeries): ScenarioComparisonSummary? {
         val points = series.points.sortedBy { it.year }
         if (points.isEmpty()) return null

@@ -16,7 +16,9 @@ data class HistoricalPricePoint(
 )
 
 data class HistoricalVolatilityEstimate(
+    val annualizedReturnPercent: Double = 0.0,
     val annualizedVolatilityPercent: Double,
+    val maximumDrawdownPercent: Double = 0.0,
     val startMonth: YearMonth,
     val endMonth: YearMonth,
     val monthlyObservationCount: Int,
@@ -37,12 +39,15 @@ object HistoricalVolatilityEngine {
         val totalWeight = allocations.sumOf { it.weight }
         if (allocations.isEmpty() || totalWeight <= 0.0) return null
 
-        val monthlyReturnsByTicker = allocations.associate { allocation ->
-            val history = priceHistory.entries
+        val pricePointsByTicker = allocations.associate { allocation ->
+            val points = priceHistory.entries
                 .firstOrNull { it.key.equals(allocation.ticker, ignoreCase = true) }
                 ?.value
                 .orEmpty()
-            allocation.ticker to monthlyReturns(history)
+            allocation.ticker to points
+        }
+        val monthlyReturnsByTicker = pricePointsByTicker.mapValues { (_, points) ->
+            monthlyReturns(points)
         }
         if (monthlyReturnsByTicker.values.any { it.isEmpty() }) return null
 
@@ -53,6 +58,10 @@ object HistoricalVolatilityEngine {
         if (commonMonths.size < MinimumMonthlyObservations) return null
 
         val normalizedWeights = allocations.associate { it.ticker to it.weight / totalWeight }
+        val annualizedReturnPercent = normalizedWeights.entries.sumOf { (ticker, weight) ->
+            val rates = HistoricalRateEngine.calculate(pricePointsByTicker.getValue(ticker)) ?: return null
+            weight * rates.priceCagrPercent
+        }
         val portfolioReturns = commonMonths.map { month ->
             normalizedWeights.entries.sumOf { (ticker, weight) ->
                 weight * monthlyReturnsByTicker.getValue(ticker).getValue(month)
@@ -65,12 +74,28 @@ object HistoricalVolatilityEngine {
         } / (portfolioReturns.size - 1)
 
         return HistoricalVolatilityEstimate(
+            annualizedReturnPercent = annualizedReturnPercent,
             annualizedVolatilityPercent = sqrt(variance) * sqrt(12.0) * 100.0,
+            maximumDrawdownPercent = maximumDrawdownPercent(portfolioReturns),
             startMonth = commonMonths.first(),
             endMonth = commonMonths.last(),
             monthlyObservationCount = commonMonths.size,
             tickers = allocations.map { it.ticker }
         )
+    }
+
+    private fun maximumDrawdownPercent(returns: List<Double>): Double {
+        var portfolioValue = 1.0
+        var peakValue = 1.0
+        var maximumDrawdown = 0.0
+        returns.forEach { monthlyReturn ->
+            portfolioValue *= (1.0 + monthlyReturn).coerceAtLeast(0.0)
+            peakValue = maxOf(peakValue, portfolioValue)
+            if (peakValue > 0.0) {
+                maximumDrawdown = maxOf(maximumDrawdown, (peakValue - portfolioValue) / peakValue)
+            }
+        }
+        return maximumDrawdown * 100.0
     }
 
     private fun monthlyReturns(points: List<HistoricalPricePoint>): Map<YearMonth, Double> {

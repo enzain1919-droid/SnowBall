@@ -28,6 +28,17 @@ class HistoricalVolatilityEngineTest {
     }
 
     @Test
+    fun calculatesMaximumDrawdownFromPortfolioMonthlyReturns() {
+        val monthlyReturns = listOf(0.10, -0.20) + List(10) { 0.03 }
+        val estimate = HistoricalVolatilityEngine.calculate(
+            rawAllocations = listOf(HistoricalAssetAllocation("AAA", 1.0)),
+            priceHistory = mapOf("AAA" to pricesFromReturns(monthlyReturns))
+        )!!
+
+        assertEquals(20.0, estimate.maximumDrawdownPercent, 1e-9)
+    }
+
+    @Test
     fun combinesAssetsUsingSavedWeightsAndCommonMonths() {
         val firstReturns = List(12) { index -> if (index % 2 == 0) 0.10 else -0.05 }
         val secondReturns = List(12) { index -> if (index % 2 == 0) -0.02 else 0.04 }
@@ -47,8 +58,11 @@ class HistoricalVolatilityEngineTest {
         val average = weightedReturns.average()
         val expected = sqrt(weightedReturns.sumOf { (it - average) * (it - average) } / 11.0) *
             sqrt(12.0) * 100.0
+        val firstCagr = HistoricalRateEngine.calculate(pricesFromReturns(firstReturns))!!.priceCagrPercent
+        val secondCagr = HistoricalRateEngine.calculate(pricesFromReturns(secondReturns))!!.priceCagrPercent
 
         assertEquals(expected, estimate.annualizedVolatilityPercent, 1e-9)
+        assertEquals(firstCagr * 0.75 + secondCagr * 0.25, estimate.annualizedReturnPercent, 1e-9)
         assertEquals(listOf("AAA", "BBB"), estimate.tickers)
     }
 

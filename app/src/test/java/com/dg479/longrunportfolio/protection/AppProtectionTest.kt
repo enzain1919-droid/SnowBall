@@ -4,6 +4,7 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import java.time.LocalDate
 
 class AppProtectionTest {
     @Test
@@ -23,5 +24,27 @@ class AppProtectionTest {
         assertTrue(settings.matchesQr("snowball-qr"))
         assertFalse(settings.matchesQr("different-qr"))
         assertFalse(settings.matchesQr(null))
+    }
+
+    @Test
+    fun monthlyReviewRemainsAvailableUntilCompleted() {
+        val missedFirstDay = PortfolioReviewStatus(
+            today = LocalDate.of(2026, 10, 7),
+            completedMonth = "2026-09"
+        )
+
+        assertTrue(missedFirstDay.isReviewAvailable)
+        assertEquals(LocalDate.of(2026, 10, 1), missedFirstDay.nextReviewDate)
+    }
+
+    @Test
+    fun completedReviewMovesNextDateToFollowingMonth() {
+        val completed = PortfolioReviewStatus(
+            today = LocalDate.of(2026, 12, 20),
+            completedMonth = "2026-12"
+        )
+
+        assertFalse(completed.isReviewAvailable)
+        assertEquals(LocalDate.of(2027, 1, 1), completed.nextReviewDate)
     }
 }

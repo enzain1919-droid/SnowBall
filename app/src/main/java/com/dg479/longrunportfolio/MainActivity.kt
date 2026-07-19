@@ -121,10 +121,12 @@ import androidx.core.view.WindowCompat
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import com.dg479.longrunportfolio.formatting.CurrencyDisplayFormatter
+import com.dg479.longrunportfolio.planning.InvestmentDurationFormatter
 import com.dg479.longrunportfolio.protection.ProtectionDailyUsage
 import com.dg479.longrunportfolio.protection.ProtectionMode
 import com.dg479.longrunportfolio.protection.ProtectionSettings
 import com.dg479.longrunportfolio.protection.ProtectionStore
+import com.dg479.longrunportfolio.protection.PortfolioReviewStatus
 import com.dg479.longrunportfolio.protection.hashQrContent
 import com.dg479.longrunportfolio.protection.matchesQr
 import com.dg479.longrunportfolio.simulation.DividendProjectionEngine
@@ -133,7 +135,10 @@ import com.dg479.longrunportfolio.simulation.DividendProjectionRow as DividendGr
 import com.dg479.longrunportfolio.simulation.DividendTaxEngine
 import com.dg479.longrunportfolio.simulation.DividendTaxPerson
 import com.dg479.longrunportfolio.simulation.HistoricalAssetAllocation
+import com.dg479.longrunportfolio.simulation.HistoricalAnnualRates
+import com.dg479.longrunportfolio.simulation.HistoricalDividendPoint
 import com.dg479.longrunportfolio.simulation.HistoricalPricePoint
+import com.dg479.longrunportfolio.simulation.HistoricalRateEngine
 import com.dg479.longrunportfolio.simulation.HistoricalVolatilityEngine
 import com.dg479.longrunportfolio.simulation.HistoricalVolatilityEstimate
 import com.dg479.longrunportfolio.simulation.SelfDividendAssetInput
@@ -203,6 +208,7 @@ private val SimulatorAnalysisColor = Color(0xFF7C3AED)
 private const val DefaultUsdKrw = 1535.29
 private var DisplayCurrency = "KRW"
 private var DisplayUsdKrw = DefaultUsdKrw
+private var HidePortfolioAmounts = false
 private const val MarketRefreshIntervalMs = 5L * 60L * 1000L
 private const val ManualRefreshThrottleMs = 60L * 1000L
 private const val KisRequestDelayMs = 550L
@@ -430,6 +436,8 @@ private data class DividendChartUpdateSnapshot(
     val inputKey: String,
     val ticker: String,
     val targetMonthlyDividend: Long,
+    val latestPrice: Double?,
+    val dividendYieldPercent: Double?,
     val dividendGrowthMetric: DividendMetricUi,
     val priceGrowthMetric: DividendMetricUi,
     val pricePoints: List<Pair<LocalDate, Double>>,
@@ -660,7 +668,8 @@ private enum class AppRoute {
     DeleteManualAccounts,
     AddAccount,
     Settings,
-    DisplayModeSettings
+    DisplayModeSettings,
+    FeatureGuide
 }
 
 class MainActivity : ComponentActivity() {
@@ -704,6 +713,10 @@ private fun LongRunApp() {
         mutableStateOf(ProtectionStore.loadSettingsForAppLaunch(context, resetOnAppUpdate = BuildConfig.DEBUG))
     }
     var dailyProtectionUsage by remember { mutableStateOf(ProtectionStore.loadTodayUsage(context)) }
+    var portfolioReviewStatus by remember {
+        mutableStateOf(ProtectionStore.loadPortfolioReviewStatus(context))
+    }
+    var isPortfolioReviewSession by remember { mutableStateOf(false) }
     var isAppUnlocked by remember { mutableStateOf(protectionSettings.mode == ProtectionMode.NORMAL) }
     var showLockedSimulator by remember { mutableStateOf(false) }
     var lockStartedAt by remember { mutableLongStateOf(ProtectionStore.loadLockStartedAt(context)) }
@@ -737,13 +750,16 @@ private fun LongRunApp() {
     DisposableEffect(lifecycleOwner, protectionSettings.mode) {
         val observer = LifecycleEventObserver { _, event ->
             when (event) {
-                Lifecycle.Event.ON_START -> if (
-                    protectionSettings.mode != ProtectionMode.NORMAL &&
-                    !isAppUnlocked &&
-                    !qrScanCoordinator.externalFlowActive &&
-                    ProtectionStore.consumeOneTimeWaitBypass(context)
-                ) {
-                    bypassWaitForCurrentLock = true
+                Lifecycle.Event.ON_START -> {
+                    portfolioReviewStatus = ProtectionStore.loadPortfolioReviewStatus(context)
+                    if (
+                        protectionSettings.mode != ProtectionMode.NORMAL &&
+                        !isAppUnlocked &&
+                        !qrScanCoordinator.externalFlowActive &&
+                        ProtectionStore.consumeOneTimeWaitBypass(context)
+                    ) {
+                        bypassWaitForCurrentLock = true
+                    }
                 }
                 Lifecycle.Event.ON_STOP -> if (
                     protectionSettings.mode != ProtectionMode.NORMAL &&
@@ -753,6 +769,7 @@ private fun LongRunApp() {
                         lockStartedAt = ProtectionStore.startNewLock(context)
                     }
                     isAppUnlocked = false
+                    isPortfolioReviewSession = false
                     showLockedSimulator = false
                     bypassWaitForCurrentLock = false
                 }
@@ -834,7 +851,9 @@ private fun LongRunApp() {
                 val restoredProtectionSettings = ProtectionStore.loadSettings(context)
                 protectionSettings = restoredProtectionSettings
                 dailyProtectionUsage = ProtectionStore.loadTodayUsage(context)
+                portfolioReviewStatus = ProtectionStore.loadPortfolioReviewStatus(context)
                 isAppUnlocked = restoredProtectionSettings.mode == ProtectionMode.NORMAL
+                isPortfolioReviewSession = false
                 lockStartedAt = ProtectionStore.startNewLock(context)
                 bypassWaitForCurrentLock = false
                 accounts.clear()
@@ -898,6 +917,7 @@ private fun LongRunApp() {
             route == AppRoute.AccountManage -> route = AppRoute.Main
             route == AppRoute.AddAccount -> route = AppRoute.Main
             route == AppRoute.DisplayModeSettings -> route = AppRoute.Settings
+            route == AppRoute.FeatureGuide -> route = AppRoute.Settings
             route == AppRoute.Settings -> route = AppRoute.Main
             route == AppRoute.AccountDetail -> route = AppRoute.Main
             selectedTab != 0 -> selectedTab = 0
@@ -923,7 +943,7 @@ private fun LongRunApp() {
         }
     }
 
-    fun unlockProtectedApp() {
+    fun unlockProtectedApp(asPortfolioReview: Boolean = false) {
         val currentUsage = ProtectionStore.loadTodayUsage(context)
         if (currentUsage.entryCount >= protectionSettings.mode.dailyEntryLimit) {
             dailyProtectionUsage = currentUsage
@@ -934,8 +954,19 @@ private fun LongRunApp() {
         ProtectionStore.clearLockStartedAt(context)
         showLockedSimulator = false
         bypassWaitForCurrentLock = false
+        isPortfolioReviewSession = asPortfolioReview && protectionSettings.mode == ProtectionMode.STRONG
+        if (isPortfolioReviewSession) {
+            portfolioReviewStatus = ProtectionStore.completePortfolioReview(context)
+        }
+        route = AppRoute.Main
+        selectedTab = 0
         isAppUnlocked = true
     }
+
+    HidePortfolioAmounts = protectionSettings.mode == ProtectionMode.STRONG &&
+        !isPortfolioReviewSession &&
+        !showLockedSimulator &&
+        !(route == AppRoute.Main && selectedTab == 1)
 
     LongRunPortfolioTheme(darkTheme = darkMode, dynamicColor = false) {
     if (protectionSettings.mode != ProtectionMode.NORMAL && !isAppUnlocked) {
@@ -954,12 +985,24 @@ private fun LongRunApp() {
                 dailyUsage = dailyProtectionUsage,
                 lockStartedAt = lockStartedAt,
                 bypassWait = bypassWaitForCurrentLock,
-                onUnlock = ::unlockProtectedApp,
+                investmentStartDate = parseAppDate(goalPlan.startDate),
+                investmentGoalYears = goalPlan.years,
+                portfolioReviewStatus = portfolioReviewStatus,
+                onUnlock = { unlockProtectedApp() },
                 onOpenSimulator = { showLockedSimulator = true },
                 onRequestQrUnlock = {
                     requestQrScan { content ->
                         if (protectionSettings.matchesQr(content)) {
                             unlockProtectedApp()
+                        } else if (content != null) {
+                            Toast.makeText(context, "등록된 QR 코드와 일치하지 않습니다.", Toast.LENGTH_LONG).show()
+                        }
+                    }
+                },
+                onRequestPortfolioReview = {
+                    requestQrScan { content ->
+                        if (protectionSettings.matchesQr(content)) {
+                            unlockProtectedApp(asPortfolioReview = true)
                         } else if (content != null) {
                             Toast.makeText(context, "등록된 QR 코드와 일치하지 않습니다.", Toast.LENGTH_LONG).show()
                         }
@@ -1218,6 +1261,7 @@ private fun LongRunApp() {
                     accounts = accounts,
                     onBack = { route = AppRoute.Main },
                     onDisplayModeClick = { route = AppRoute.DisplayModeSettings },
+                    onFeatureGuideClick = { route = AppRoute.FeatureGuide },
                     onCurrencyChange = {
                         val updated = appSettings.copy(currency = it)
                         appSettings = updated
@@ -1240,6 +1284,7 @@ private fun LongRunApp() {
                         protectionSettings = normalized
                         ProtectionStore.saveSettings(context, normalized)
                         isAppUnlocked = true
+                        isPortfolioReviewSession = false
                         dailyProtectionUsage = ProtectionStore.loadTodayUsage(context)
                     },
                     onRequestQrScan = requestQrScan,
@@ -1261,6 +1306,9 @@ private fun LongRunApp() {
                         saveAppSettings(context, updated)
                     }
                 )
+            }
+            AppRoute.FeatureGuide -> ScaledApp(scale = 0.84f) {
+                FeatureGuideScreen(onBack = { route = AppRoute.Settings })
             }
         }
 
@@ -1856,6 +1904,10 @@ private fun HoldingOverviewSheet(holding: HoldingUi, onClose: () -> Unit) {
     val dayProfit = holding.dayProfit
     val totalProfit = holding.amount - holding.principal
     val totalRate = if (holding.principal == 0L) 0.0 else totalProfit.toDouble() / holding.principal
+    val amountText = formatWon(holding.amount)
+    val totalProfitText = formatSignedWon(totalProfit)
+    val dayProfitText = formatSignedWon(dayProfit)
+    val currentPriceText = formatAssetPrice(holding.currentPrice, holding.ticker)
     Column(
         modifier = Modifier
             .fillMaxWidth()
@@ -1869,15 +1921,15 @@ private fun HoldingOverviewSheet(holding: HoldingUi, onClose: () -> Unit) {
             Column {
                 Text(holding.name.ifBlank { holding.ticker }, color = TextPrimary, fontSize = 20.sp, fontWeight = FontWeight.ExtraBold)
                 Text(
-                    "${holding.ticker} ${formatAssetPrice(holding.currentPrice, holding.ticker)} (${formatPercent(dayRate)})",
-                    color = if (dayRate < 0) NegativeBlue else PositiveRed,
+                    "${holding.ticker} $currentPriceText (${formatPercent(dayRate)})",
+                    color = portfolioAmountColor(currentPriceText, if (dayRate < 0) NegativeBlue else PositiveRed),
                     fontSize = 15.sp,
                     fontWeight = FontWeight.Bold
                 )
             }
         }
         Spacer(modifier = Modifier.height(36.dp))
-        Text(formatWon(holding.amount), color = TextPrimary, fontSize = 38.sp, lineHeight = 44.sp, fontWeight = FontWeight.ExtraBold)
+        Text(amountText, color = portfolioAmountColor(amountText, TextPrimary), fontSize = 38.sp, lineHeight = 44.sp, fontWeight = FontWeight.ExtraBold)
         Spacer(modifier = Modifier.height(6.dp))
         Text("원금 ${formatWon(holding.principal)}", color = TextSecondary, fontSize = 17.sp)
         Spacer(modifier = Modifier.height(32.dp))
@@ -1887,12 +1939,12 @@ private fun HoldingOverviewSheet(holding: HoldingUi, onClose: () -> Unit) {
         }
         Spacer(modifier = Modifier.height(28.dp))
         Row(modifier = Modifier.fillMaxWidth()) {
-            DetailInfoBlock("총 수익", "${formatSignedWon(totalProfit)}\n(${formatPercent(totalRate)})", Modifier.weight(1f), if (totalProfit < 0) NegativeBlue else PositiveRed)
+            DetailInfoBlock("총 수익", "$totalProfitText\n(${formatPercent(totalRate)})", Modifier.weight(1f), portfolioAmountColor(totalProfitText, if (totalProfit < 0) NegativeBlue else PositiveRed))
             DetailInfoBlock(
                 "일간 수익",
-                "${formatSignedWon(dayProfit)}\n(${formatPercent(dayRate)})",
+                "$dayProfitText\n(${formatPercent(dayRate)})",
                 Modifier.weight(1f),
-                if (dayProfit < 0) NegativeBlue else PositiveRed
+                portfolioAmountColor(dayProfitText, if (dayProfit < 0) NegativeBlue else PositiveRed)
             )
         }
         Spacer(modifier = Modifier.height(28.dp))
@@ -1940,6 +1992,8 @@ private fun HoldingOverviewSheet(holding: HoldingUi, accounts: List<AccountUi>, 
 private fun HomeHoldingAccountRow(account: AccountUi, holding: HoldingUi) {
     val profit = holding.amount - holding.principal
     val rate = if (holding.principal == 0L) 0.0 else profit.toDouble() / holding.principal
+    val amountText = formatWon(holding.amount)
+    val profitText = formatSignedWon(profit)
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -1965,8 +2019,8 @@ private fun HomeHoldingAccountRow(account: AccountUi, holding: HoldingUi) {
             Text("${formatQuantity(holding.quantity)}주 · ${formatAssetPrice(holding.averagePrice, holding.ticker)}", color = TextSecondary, fontSize = 15.sp)
         }
         Column(horizontalAlignment = Alignment.End) {
-            Text(formatWon(holding.amount), color = TextPrimary, fontSize = 18.sp, fontWeight = FontWeight.ExtraBold)
-            Text("${formatSignedWon(profit)} (${formatPercent(rate)})", color = if (profit < 0) NegativeBlue else PositiveRed, fontSize = 14.sp, fontWeight = FontWeight.Bold)
+            Text(amountText, color = portfolioAmountColor(amountText, TextPrimary), fontSize = 18.sp, fontWeight = FontWeight.ExtraBold)
+            Text("$profitText (${formatPercent(rate)})", color = portfolioAmountColor(profitText, if (profit < 0) NegativeBlue else PositiveRed), fontSize = 14.sp, fontWeight = FontWeight.Bold)
         }
     }
 }
@@ -1976,7 +2030,7 @@ private fun DetailInfoBlock(label: String, value: String, modifier: Modifier = M
     Column(modifier = modifier) {
         Text(label, color = TextSecondary, fontSize = 16.sp)
         Spacer(modifier = Modifier.height(8.dp))
-        Text(value, color = valueColor, fontSize = 19.sp, fontWeight = FontWeight.Bold, lineHeight = 25.sp)
+        Text(value, color = portfolioAmountColor(value, valueColor), fontSize = 19.sp, fontWeight = FontWeight.Bold, lineHeight = 25.sp)
     }
 }
 
@@ -2224,7 +2278,7 @@ private fun ProfitAnalysisContent(accounts: List<AccountUi>) {
         Row(verticalAlignment = Alignment.Top) {
             Text("평가수익", color = TextPrimary, fontSize = 18.sp, fontWeight = FontWeight.ExtraBold, modifier = Modifier.weight(1f))
             Column(horizontalAlignment = Alignment.End) {
-                Text(formatSignedWon(periodProfit), color = if (periodProfit < 0) NegativeBlue else PositiveRed, fontSize = 22.sp, fontWeight = FontWeight.ExtraBold)
+                Text(formatSignedWon(periodProfit), color = portfolioAmountColor(formatSignedWon(periodProfit), if (periodProfit < 0) NegativeBlue else PositiveRed), fontSize = 22.sp, fontWeight = FontWeight.ExtraBold)
                 Text("(${formatPercent(periodRate)})", color = if (periodProfit < 0) NegativeBlue else PositiveRed, fontSize = 18.sp, fontWeight = FontWeight.Bold)
             }
         }
@@ -2258,7 +2312,7 @@ private fun ProfitHoldingMiniRow(holding: HoldingUi, profit: Long, rate: Double)
         Spacer(modifier = Modifier.width(12.dp))
         Text(assetDisplayName(holding), color = TextSecondary, fontSize = 16.sp, modifier = Modifier.weight(1f))
         Column(horizontalAlignment = Alignment.End) {
-            Text(formatSignedWon(profit), color = if (profit < 0) NegativeBlue else PositiveRed, fontSize = 16.sp, fontWeight = FontWeight.Bold)
+            Text(formatSignedWon(profit), color = portfolioAmountColor(formatSignedWon(profit), if (profit < 0) NegativeBlue else PositiveRed), fontSize = 16.sp, fontWeight = FontWeight.Bold)
             Text("(${formatPercent(rate)})", color = if (profit < 0) NegativeBlue else PositiveRed, fontSize = 14.sp, fontWeight = FontWeight.Bold)
         }
     }
@@ -2402,9 +2456,9 @@ private fun TaxAnalysisContent(accounts: List<AccountUi>) {
                     Text("${formatQuantity(holding.quantity)}주 · 원금 ${formatWon(holding.principal)}", color = TextSecondary, fontSize = 13.sp, fontWeight = FontWeight.Bold)
                 }
                 Column(horizontalAlignment = Alignment.End) {
-                    Text("세후 ${formatWon(afterTaxAmount)}", color = TextPrimary, fontSize = 16.sp, fontWeight = FontWeight.ExtraBold)
+                    Text("세후 ${formatWon(afterTaxAmount)}", color = portfolioAmountColor(formatWon(afterTaxAmount), TextPrimary), fontSize = 16.sp, fontWeight = FontWeight.ExtraBold)
                     Text("양도세 ${formatWon(allocatedTax)}", color = TextSecondary, fontSize = 12.sp, fontWeight = FontWeight.Bold)
-                    Text("세후손익 ${formatSignedWon(afterTaxProfit)}", color = if (afterTaxProfit < 0) NegativeBlue else PositiveRed, fontSize = 13.sp, fontWeight = FontWeight.Bold)
+                    Text("세후손익 ${formatSignedWon(afterTaxProfit)}", color = portfolioAmountColor(formatSignedWon(afterTaxProfit), if (afterTaxProfit < 0) NegativeBlue else PositiveRed), fontSize = 13.sp, fontWeight = FontWeight.Bold)
                 }
             }
         }
@@ -2578,7 +2632,7 @@ private fun DividendMonthSection(month: Int, items: List<PortfolioDividendItem>,
     Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
         Text("${month}월", color = TextPrimary, fontSize = 24.sp, fontWeight = FontWeight.ExtraBold)
         Spacer(modifier = Modifier.weight(1f))
-        Text(formatWon(total), color = TextPrimary, fontSize = 22.sp, fontWeight = FontWeight.ExtraBold)
+        Text(formatWon(total), color = portfolioAmountColor(formatWon(total), TextPrimary), fontSize = 22.sp, fontWeight = FontWeight.ExtraBold)
     }
     Spacer(modifier = Modifier.height(14.dp))
     items.sortedWith(compareBy<PortfolioDividendItem> { it.day }.thenBy { it.holding.name }).forEach { item ->
@@ -2863,8 +2917,11 @@ private fun DividendSimulationContent(accounts: List<AccountUi>, usdKrw: Double)
     if (people.isEmpty()) people.addAll(defaultPeople)
     val activePeople = people.toList().ifEmpty { defaultPeople }
     val targetAmount = targetInput.filter { it.isDigit() }.toLongOrNull() ?: 0L
-    val priceKrw = dividendPriceKrw(selected, usdKrw)
-    val grossAnnualDividendPerShare = priceKrw * (selected.yieldRate / 100.0)
+    val selectedChartSnapshot = chartSnapshot?.takeIf { it.ticker.equals(selected.ticker, ignoreCase = true) }
+    val selectedPrice = selectedChartSnapshot?.latestPrice ?: selected.fallbackPrice
+    val selectedYield = selectedChartSnapshot?.dividendYieldPercent ?: selected.yieldRate
+    val priceKrw = if (selected.currency == "USD") selectedPrice * usdKrw else selectedPrice
+    val grossAnnualDividendPerShare = priceKrw * (selectedYield / 100.0)
     val selectedWithholdingTaxRate = dividendWithholdingTaxRate(selected)
     val requiredShares = when (modeIndex) {
         0 -> requiredDividendShares(
@@ -2916,7 +2973,6 @@ private fun DividendSimulationContent(accounts: List<AccountUi>, usdKrw: Double)
         1 -> targetAmount / 12
         else -> expectedMonthlyDividend
     }
-    val selectedChartSnapshot = chartSnapshot?.takeIf { it.ticker.equals(selected.ticker, ignoreCase = true) }
     val displayedDividendGrowthMetric = selectedChartSnapshot?.dividendGrowthMetric ?: DividendMetricUi(
         label = "평균 배당성장율",
         value = "${formatDecimal(selected.dividendGrowth5y)}%",
@@ -2955,15 +3011,22 @@ private fun DividendSimulationContent(accounts: List<AccountUi>, usdKrw: Double)
 
     fun saveNamedPreset(name: String) {
         val preset = currentPreset(name)
-        savedPresets.removeAll { it.name == preset.name }
-        savedDividendSimulationPresetsCache.removeAll { it.name == preset.name }
-        savedPresets.add(preset)
-        savedDividendSimulationPresetsCache.add(preset)
+        val existingIndex = savedPresets.indexOfFirst { it.name == preset.name }
+        if (existingIndex >= 0) savedPresets[existingIndex] = preset else savedPresets.add(preset)
+        savedDividendSimulationPresetsCache.clear()
+        savedDividendSimulationPresetsCache.addAll(savedPresets)
         saveSavedDividendPresets(context, savedDividendSimulationPresetsCache)
         lastDividendSimulationPresetCache = preset
         presetName = ""
         showSaveDialog = false
         Toast.makeText(context, "배당 시뮬레이션을 저장했어요.", Toast.LENGTH_SHORT).show()
+    }
+
+    fun moveSavedPreset(fromIndex: Int, toIndex: Int) {
+        if (!moveListItem(savedPresets, fromIndex, toIndex)) return
+        savedDividendSimulationPresetsCache.clear()
+        savedDividendSimulationPresetsCache.addAll(savedPresets)
+        saveSavedDividendPresets(context, savedDividendSimulationPresetsCache)
     }
 
     fun renameSavedPreset(preset: DividendSimulationPreset, newName: String) {
@@ -2990,35 +3053,71 @@ private fun DividendSimulationContent(accounts: List<AccountUi>, usdKrw: Double)
 
     fun updateDividendCharts() {
         val candidate = selected
-        val monthlyTarget = targetMonthlyDividend
         val peopleSnapshot = activePeople.toList()
-        val grossDividendSnapshot = grossExpectedAnnualDividend
-        val initialAssetSnapshot = requiredCapital
+        val modeSnapshot = modeIndex
+        val targetAmountSnapshot = targetAmount
         val withholdingTaxSnapshot = selectedWithholdingTaxRate
         val inputKeySnapshot = currentProjectionInputKey
         scope.launch {
             isUpdatingCharts = true
             try {
-                val updated = withContext(Dispatchers.Default) {
+                val updated = withContext(Dispatchers.IO) {
+                    val annualRates = refreshHistoricalAnnualRates(context, candidate.ticker)
                     val updatedDividendGrowthMetric = dividendGrowthMetric(context, candidate)
                     val updatedPriceGrowthMetric = dividendPriceGrowthMetric(context, candidate)
+                    val latestPrice = annualRates?.latestPrice ?: candidate.fallbackPrice
+                    val dividendYield = annualRates?.dividendYieldPercent ?: candidate.yieldRate
+                    val latestPriceWon = if (candidate.currency == "USD") latestPrice * usdKrw else latestPrice
+                    val grossDividendPerShare = latestPriceWon * dividendYield / 100.0
+                    val shares = when (modeSnapshot) {
+                        0 -> requiredDividendShares(
+                            grossDividendPerShare,
+                            targetAmountSnapshot.coerceAtMost(Long.MAX_VALUE / 12) * 12,
+                            peopleSnapshot,
+                            withholdingTaxSnapshot
+                        )
+                        1 -> requiredDividendShares(
+                            grossDividendPerShare,
+                            targetAmountSnapshot,
+                            peopleSnapshot,
+                            withholdingTaxSnapshot
+                        )
+                        else -> if (latestPriceWon > 0.0) {
+                            (targetAmountSnapshot / latestPriceWon).roundToLong()
+                        } else {
+                            0L
+                        }
+                    }.coerceAtLeast(0L)
+                    val updatedGrossAnnualDividend = shares * grossDividendPerShare
+                    val updatedInitialAsset = (shares * latestPriceWon).roundToLong()
+                    val updatedMonthlyTarget = when (modeSnapshot) {
+                        0 -> targetAmountSnapshot
+                        1 -> targetAmountSnapshot / 12
+                        else -> dividendAfterTaxAnnualWon(
+                            updatedGrossAnnualDividend,
+                            peopleSnapshot,
+                            withholdingTaxSnapshot
+                        ).roundToLong() / 12
+                    }
                     DividendChartUpdateSnapshot(
                         inputKey = inputKeySnapshot,
                         ticker = candidate.ticker,
-                        targetMonthlyDividend = monthlyTarget,
+                        targetMonthlyDividend = updatedMonthlyTarget,
+                        latestPrice = latestPrice,
+                        dividendYieldPercent = dividendYield,
                         dividendGrowthMetric = updatedDividendGrowthMetric,
                         priceGrowthMetric = updatedPriceGrowthMetric,
                         pricePoints = dividendPriceChartPoints(context, candidate),
                         growthPoints = dividendGrowthChartPoints(
                             context = context,
                             candidate = candidate,
-                            targetMonthlyDividend = monthlyTarget,
+                            targetMonthlyDividend = updatedMonthlyTarget,
                             people = peopleSnapshot,
                             usdKrw = usdKrw
                         ),
                         projectionRows = dividendGrowthProjectionRows(
-                            grossAnnualDividend = grossDividendSnapshot,
-                            initialAsset = initialAssetSnapshot,
+                            grossAnnualDividend = updatedGrossAnnualDividend,
+                            initialAsset = updatedInitialAsset,
                             dividendGrowthRate = updatedDividendGrowthMetric.numericValue ?: candidate.dividendGrowth5y,
                             priceGrowthRate = updatedPriceGrowthMetric.numericValue ?: candidate.priceGrowth10y,
                             people = peopleSnapshot,
@@ -3381,11 +3480,17 @@ private fun DividendSimulationContent(accounts: List<AccountUi>, usdKrw: Double)
             containerColor = PanelColor,
             title = { Text("배당 시뮬레이션 불러오기", color = TextPrimary, fontWeight = FontWeight.ExtraBold) },
             text = {
-                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(max = 360.dp)
+                        .verticalScroll(rememberScrollState()),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
                     if (savedPresets.isEmpty()) {
                         Text("저장된 배당 시뮬레이션이 없습니다.", color = TextSecondary)
                     } else {
-                        savedPresets.forEach { preset ->
+                        savedPresets.forEachIndexed { index, preset ->
                             Row(
                                 modifier = Modifier
                                     .fillMaxWidth()
@@ -3411,7 +3516,13 @@ private fun DividendSimulationContent(accounts: List<AccountUi>, usdKrw: Double)
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
                                 Column(modifier = Modifier.weight(1f)) {
-                                    Text(preset.name, color = TextPrimary, fontWeight = FontWeight.ExtraBold)
+                                    Text(
+                                        preset.name,
+                                        color = TextPrimary,
+                                        fontWeight = FontWeight.ExtraBold,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
                                     val projectionLabel = if (preset.projectionRows.isNotEmpty()) " · 20년 전망" else ""
                                     Text(
                                         "${preset.ticker} · ${preset.people.size}명$projectionLabel",
@@ -3420,7 +3531,12 @@ private fun DividendSimulationContent(accounts: List<AccountUi>, usdKrw: Double)
                                         fontWeight = FontWeight.Bold
                                     )
                                 }
-                                Text("불러오기", color = BrandGreen, fontSize = 12.sp, fontWeight = FontWeight.ExtraBold)
+                                PresetOrderControls(
+                                    canMoveUp = index > 0,
+                                    canMoveDown = index < savedPresets.lastIndex,
+                                    onMoveUp = { moveSavedPreset(index, index - 1) },
+                                    onMoveDown = { moveSavedPreset(index, index + 1) }
+                                )
                             }
                         }
                     }
@@ -3858,104 +3974,25 @@ private fun dividendChartFullDate(date: LocalDate): String =
     "${date.year}.${date.monthValue.toString().padStart(2, '0')}.${date.dayOfMonth.toString().padStart(2, '0')}"
 
 private fun dividendGrowthMetric(context: Context, candidate: DividendEtfUi): DividendMetricUi {
-    val availableYears = dividendPaymentAvailableYears(context, candidate.ticker, 5)
-    val labelYears = when {
-        availableYears >= 2 -> availableYears
-        candidate.dividendGrowth5y != 0.0 -> 5
-        else -> 0
-    }
-    val value = if (availableYears >= 2) {
-        dividendAnnualizedDividendGrowth(context, candidate, labelYears)
-    } else {
-        null
-    } ?: candidate.dividendGrowth5y.takeIf { it != 0.0 }
+    val rates = historicalAnnualRates(context, candidate.ticker)
+    val value = rates?.dividendGrowthCagrPercent
+        ?: candidate.dividendGrowth5y.takeIf { it != 0.0 }
     return DividendMetricUi(
-        label = if (labelYears >= 2) "${labelYears}년 평균 배당성장율" else "평균 배당성장율",
+        label = rates?.dividendStartDate?.let { "상장 후 배당성장률" } ?: "평균 배당성장율",
         value = value?.let { "${formatDecimal(it)}%" } ?: "분배금 데이터 부족",
         numericValue = value
     )
 }
 
 private fun dividendPriceGrowthMetric(context: Context, candidate: DividendEtfUi): DividendMetricUi {
-    val availableYears = dividendAvailableYears(context, candidate.ticker, 10)
-    val labelYears = when {
-        availableYears >= 2 -> availableYears
-        candidate.priceGrowth10y != 0.0 -> 10
-        else -> 0
-    }
-    val value = if (availableYears >= 2) {
-        dividendAnnualizedPriceGrowth(context, candidate.ticker, labelYears)
-    } else {
-        null
-    } ?: candidate.priceGrowth10y.takeIf { it != 0.0 }
+    val rates = historicalAnnualRates(context, candidate.ticker)
+    val value = rates?.priceCagrPercent
+        ?: candidate.priceGrowth10y.takeIf { it != 0.0 }
     return DividendMetricUi(
-        label = if (labelYears >= 2) "${labelYears}년 평균 주가상승율" else "평균 주가상승율",
+        label = if (rates != null) "상장 후 연환산 주가상승률" else "평균 주가상승율",
         value = value?.let { "${formatDecimal(it)}%" } ?: "2년 미만",
         numericValue = value
     )
-}
-
-private fun dividendAvailableYears(context: Context, ticker: String, maxYears: Int): Int {
-    val dates = loadHistoricalSeries(context, ticker)
-        .mapNotNull { parseAppDate(it.date) }
-        .sorted()
-    if (dates.size < 2) return 0
-    return (ChronoUnit.DAYS.between(dates.first(), dates.last()) / 365.25)
-        .toInt()
-        .coerceIn(0, maxYears)
-}
-
-private fun dividendPaymentAvailableYears(context: Context, ticker: String, maxYears: Int): Int {
-    val dates = loadDividendPaymentSeries(context, ticker)
-        .mapNotNull { parseAppDate(it.date) }
-        .sorted()
-    if (dates.size < 2) return 0
-    return (ChronoUnit.DAYS.between(dates.first(), dates.last()) / 365.25)
-        .toInt()
-        .coerceIn(0, maxYears)
-}
-
-private fun dividendAnnualizedPriceGrowth(context: Context, ticker: String, years: Int): Double? {
-    val series = loadHistoricalSeries(context, ticker)
-        .mapNotNull { point ->
-            parseAppDate(point.date)?.let { date -> date to point.close }
-        }
-        .filter { it.second > 0.0 }
-        .sortedBy { it.first }
-    if (series.size < 2) return null
-    val end = series.last()
-    val desiredStart = end.first.minusYears(years.toLong())
-    val start = series.firstOrNull { !it.first.isBefore(desiredStart) } ?: series.first()
-    val actualYears = ChronoUnit.DAYS.between(start.first, end.first) / 365.25
-    if (actualYears < 1.0 || start.second <= 0.0) return null
-    return ((end.second / start.second).pow(1.0 / actualYears) - 1.0) * 100.0
-}
-
-private fun dividendAnnualizedDividendGrowth(context: Context, candidate: DividendEtfUi, years: Int): Double? {
-    val payments = loadDividendPaymentSeries(context, candidate.ticker)
-        .mapNotNull { point ->
-            parseAppDate(point.date)?.let { date -> date to point.amount }
-        }
-        .filter { it.second > 0.0 }
-        .sortedBy { it.first }
-    if (payments.size < 2) return null
-
-    val firstPaymentDate = payments.first().first
-    val endDate = payments.last().first
-    val desiredStartEndDate = endDate.minusYears(years.toLong())
-    val firstComparableEndDate = firstPaymentDate.plusYears(1)
-    val startEndDate = if (desiredStartEndDate.isBefore(firstComparableEndDate)) {
-        firstComparableEndDate
-    } else {
-        desiredStartEndDate
-    }
-    val actualYears = ChronoUnit.DAYS.between(startEndDate, endDate) / 365.25
-    if (actualYears < 1.0) return null
-
-    val startDividend = trailingDividendAmount(payments, startEndDate)
-    val endDividend = trailingDividendAmount(payments, endDate)
-    if (startDividend <= 0.0 || endDividend <= 0.0) return null
-    return ((endDividend / startDividend).pow(1.0 / actualYears) - 1.0) * 100.0
 }
 
 private fun trailingDividendAmount(payments: List<Pair<LocalDate, Double>>, endDate: LocalDate): Double {
@@ -3977,9 +4014,6 @@ private fun dividendCandidates(): List<DividendEtfUi> = listOf(
     DividendEtfUi("SPYI", "NEOS S&P 500 High Income ETF", 11.8, 0.0, 0.0, "월배당", "USD", 50.0, Color(0xFF2C7BE5))
 )
 
-private fun dividendPriceKrw(candidate: DividendEtfUi, usdKrw: Double): Double =
-    if (candidate.currency == "USD") candidate.fallbackPrice * usdKrw else candidate.fallbackPrice
-
 @Composable
 private fun TrendAnalysisContent(accounts: List<AccountUi>) {
     var selectedRange by remember { mutableIntStateOf(0) }
@@ -3993,7 +4027,7 @@ private fun TrendAnalysisContent(accounts: List<AccountUi>) {
 
     Text("투자 자산", color = TextPrimary, fontSize = 24.sp, fontWeight = FontWeight.ExtraBold)
     Spacer(modifier = Modifier.height(10.dp))
-    Text(formatWon(totalAmount), color = TextPrimary, fontSize = 38.sp, fontWeight = FontWeight.ExtraBold)
+    Text(formatWon(totalAmount), color = portfolioAmountColor(formatWon(totalAmount), TextPrimary), fontSize = 38.sp, fontWeight = FontWeight.ExtraBold)
     Spacer(modifier = Modifier.height(12.dp))
     Text("원금 ${formatWon(principal)}", color = TextPrimary, fontSize = 19.sp, fontWeight = FontWeight.Bold)
     Spacer(modifier = Modifier.height(28.dp))
@@ -4609,6 +4643,7 @@ private fun SettingsScreen(
     accounts: List<AccountUi>,
     onBack: () -> Unit,
     onDisplayModeClick: () -> Unit,
+    onFeatureGuideClick: () -> Unit,
     onCurrencyChange: (String) -> Unit,
     onApiSettingsSave: (AppSettings) -> Unit,
     onProtectionSettingsChange: (ProtectionSettings) -> Unit,
@@ -4625,6 +4660,7 @@ private fun SettingsScreen(
     var showDataDownloadSheet by remember { mutableStateOf(false) }
     var bulkDownloadRunning by remember { mutableStateOf(false) }
     var showProtectionSheet by remember { mutableStateOf(false) }
+    var pendingProtectionMode by remember { mutableStateOf<ProtectionMode?>(null) }
     var showPrincipleDialog by remember { mutableStateOf(false) }
     var qrReplacementAuthorized by remember { mutableStateOf(false) }
     var showRegisteredQr by remember { mutableStateOf(false) }
@@ -4753,7 +4789,12 @@ private fun SettingsScreen(
 
         Spacer(modifier = Modifier.height(46.dp))
         SettingsSectionTitle("서비스")
-        SettingsStaticRow(title = "버전정보", value = "2026.06.28")
+        SettingsStaticRow(title = "버전정보", value = "2026.07.19")
+        SettingsValueRow(
+            title = "전체 기능 안내",
+            value = "보기",
+            onClick = onFeatureGuideClick
+        )
     }
 
     if (showCurrencySheet) {
@@ -4791,6 +4832,22 @@ private fun SettingsScreen(
             onSelect = { targetMode ->
                 when {
                     targetMode == protectionSettings.mode -> showProtectionSheet = false
+                    protectionSettings.mode == ProtectionMode.NORMAL -> when {
+                        targetMode.requiresPrinciple && protectionSettings.investmentPrinciple.isBlank() -> Toast.makeText(
+                            context,
+                            "중간 잠금 모드에 사용할 투자 원칙 문장을 먼저 입력해 주세요.",
+                            Toast.LENGTH_LONG
+                        ).show()
+                        targetMode.requiresQrOnEntry && !protectionSettings.hasQr -> Toast.makeText(
+                            context,
+                            "강한 잠금 모드의 잠금 해제에 사용할 QR 코드를 먼저 등록해 주세요.",
+                            Toast.LENGTH_LONG
+                        ).show()
+                        else -> {
+                            pendingProtectionMode = targetMode
+                            showProtectionSheet = false
+                        }
+                    }
                     !protectionSettings.hasQr -> Toast.makeText(
                         context,
                         "모드를 변경하려면 QR 코드를 먼저 등록해 주세요.",
@@ -4810,6 +4867,48 @@ private fun SettingsScreen(
                             Toast.makeText(context, "등록된 QR 코드와 일치하지 않습니다.", Toast.LENGTH_LONG).show()
                         }
                     }
+                }
+            }
+        )
+    }
+
+    pendingProtectionMode?.let { targetMode ->
+        AlertDialog(
+            onDismissRequest = { pendingProtectionMode = null },
+            containerColor = PanelColor,
+            shape = RoundedCornerShape(28.dp),
+            title = {
+                Text(
+                    "${protectionModeLabel(targetMode)}로 변경할까요?",
+                    color = TextPrimary,
+                    fontWeight = FontWeight.ExtraBold
+                )
+            },
+            text = {
+                Text(
+                    protectionModeDescription(targetMode),
+                    color = TextSecondary,
+                    lineHeight = 20.sp
+                )
+            },
+            confirmButton = {
+                TextButton(
+                    onClick = {
+                        onProtectionSettingsChange(protectionSettings.copy(mode = targetMode))
+                        pendingProtectionMode = null
+                        Toast.makeText(
+                            context,
+                            "${protectionModeLabel(targetMode)}로 변경했어요.",
+                            Toast.LENGTH_SHORT
+                        ).show()
+                    }
+                ) {
+                    Text("변경", color = BrandGreen, fontWeight = FontWeight.Bold)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { pendingProtectionMode = null }) {
+                    Text("취소", color = TextSecondary, fontWeight = FontWeight.Bold)
                 }
             }
         )
@@ -4913,7 +5012,12 @@ private fun ProtectionModeSettingsSheet(
         Column(modifier = Modifier.fillMaxWidth().padding(horizontal = 22.dp, vertical = 8.dp)) {
             Text("잠금 모드", color = TextPrimary, fontSize = 25.sp, fontWeight = FontWeight.ExtraBold)
             Spacer(modifier = Modifier.height(6.dp))
-            Text("모드 변경은 등록된 QR 코드 확인 후 적용됩니다.", color = TextSecondary, fontSize = 13.sp)
+            Text(
+                "일반 모드에서 잠금 모드를 켤 때는 확인 후 적용됩니다. 잠금 모드 변경·해제는 등록된 QR 코드 확인이 필요합니다.",
+                color = TextSecondary,
+                fontSize = 13.sp,
+                lineHeight = 19.sp
+            )
             Spacer(modifier = Modifier.height(18.dp))
             ProtectionMode.entries.forEach { mode ->
                 val selected = mode == selectedMode
@@ -5043,9 +5147,13 @@ private fun AppProtectionLockScreen(
     dailyUsage: ProtectionDailyUsage,
     lockStartedAt: Long,
     bypassWait: Boolean,
+    investmentStartDate: LocalDate?,
+    investmentGoalYears: Int,
+    portfolioReviewStatus: PortfolioReviewStatus,
     onUnlock: () -> Unit,
     onOpenSimulator: () -> Unit,
-    onRequestQrUnlock: () -> Unit
+    onRequestQrUnlock: () -> Unit,
+    onRequestPortfolioReview: () -> Unit
 ) {
     BackHandler(enabled = true) {}
     var nowMillis by remember(lockStartedAt) { mutableLongStateOf(System.currentTimeMillis()) }
@@ -5066,16 +5174,92 @@ private fun AppProtectionLockScreen(
     val waitFinished = remainingMillis <= 0L
     val limitReached = dailyUsage.entryCount >= settings.mode.dailyEntryLimit
     val remainingEntries = (settings.mode.dailyEntryLimit - dailyUsage.entryCount).coerceAtLeast(0)
+    val today = remember(nowMillis) {
+        Instant.ofEpochMilli(nowMillis).atZone(ZoneId.systemDefault()).toLocalDate()
+    }
+    val investmentDuration = remember(investmentStartDate, today) {
+        InvestmentDurationFormatter.format(investmentStartDate, today)
+    }
+    val currentReviewStatus = remember(today, portfolioReviewStatus.completedMonth) {
+        PortfolioReviewStatus(today, portfolioReviewStatus.completedMonth)
+    }
 
-    Box(modifier = Modifier.fillMaxSize().background(AppBackground), contentAlignment = Alignment.Center) {
+    Box(
+        modifier = Modifier.fillMaxSize().background(AppBackground),
+        contentAlignment = Alignment.Center
+    ) {
         Column(
-            modifier = Modifier.fillMaxWidth().padding(horizontal = 28.dp),
+            modifier = Modifier
+                .fillMaxWidth()
+                .verticalScroll(rememberScrollState())
+                .padding(horizontal = 28.dp, vertical = 42.dp),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
             Text("잠시 멈춤", color = TextPrimary, fontSize = 30.sp, fontWeight = FontWeight.ExtraBold)
             Spacer(modifier = Modifier.height(8.dp))
             Text(protectionModeLabel(settings.mode), color = BrandGreen, fontSize = 15.sp, fontWeight = FontWeight.Bold)
-            Spacer(modifier = Modifier.height(34.dp))
+            Spacer(modifier = Modifier.height(20.dp))
+
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(8.dp))
+                    .background(SoftSurface)
+                    .padding(horizontal = 16.dp, vertical = 13.dp),
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
+                Text("투자를 이어온 시간", color = TextSecondary, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                Spacer(modifier = Modifier.height(4.dp))
+                Text(
+                    investmentDuration,
+                    color = TextPrimary,
+                    fontSize = 25.sp,
+                    fontWeight = FontWeight.ExtraBold,
+                    textAlign = TextAlign.Center
+                )
+                Spacer(modifier = Modifier.height(3.dp))
+                Text(
+                    "${investmentGoalYears.coerceAtLeast(1)}년 장기 투자 목표",
+                    color = BrandGreen,
+                    fontSize = 13.sp,
+                    fontWeight = FontWeight.Bold
+                )
+            }
+            Spacer(modifier = Modifier.height(if (settings.mode == ProtectionMode.STRONG) 14.dp else 24.dp))
+
+            if (settings.mode == ProtectionMode.STRONG) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(8.dp))
+                        .background(SoftSurface)
+                        .padding(horizontal = 16.dp, vertical = 13.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
+                    Text(
+                        "다음 포트폴리오 점검일: ${formatKoreanDate(currentReviewStatus.nextReviewDate)}",
+                        color = TextPrimary,
+                        fontSize = 14.sp,
+                        lineHeight = 20.sp,
+                        fontWeight = FontWeight.ExtraBold,
+                        textAlign = TextAlign.Center
+                    )
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Text(
+                        if (currentReviewStatus.isReviewAvailable) {
+                            "이번 달 점검을 완료할 때까지 날짜가 지나도 점검할 수 있어요."
+                        } else {
+                            "이번 달 점검 완료 · 다음 달 1일까지 평가금액을 숨깁니다."
+                        },
+                        color = if (currentReviewStatus.isReviewAvailable) BrandGreen else TextSecondary,
+                        fontSize = 12.sp,
+                        lineHeight = 18.sp,
+                        fontWeight = FontWeight.Bold,
+                        textAlign = TextAlign.Center
+                    )
+                }
+                Spacer(modifier = Modifier.height(20.dp))
+            }
 
             if (limitReached) {
                 Text("오늘 진입 종료", color = PositiveRed, fontSize = 25.sp, fontWeight = FontWeight.ExtraBold)
@@ -5156,11 +5340,20 @@ private fun AppProtectionLockScreen(
                             }
                         )
                     }
-                    ProtectionMode.STRONG -> ProtectionUnlockButton(
-                        text = "QR 코드 스캔",
-                        enabled = waitFinished && settings.hasQr,
-                        onClick = onRequestQrUnlock
-                    )
+                    ProtectionMode.STRONG -> {
+                        ProtectionUnlockButton(
+                            text = "QR로 앱 열기",
+                            enabled = waitFinished && settings.hasQr,
+                            onClick = onRequestQrUnlock
+                        )
+                        if (currentReviewStatus.isReviewAvailable) {
+                            Spacer(modifier = Modifier.height(10.dp))
+                            PortfolioReviewUnlockButton(
+                                enabled = waitFinished && settings.hasQr,
+                                onClick = onRequestPortfolioReview
+                            )
+                        }
+                    }
                     ProtectionMode.NORMAL -> Unit
                 }
             }
@@ -5184,6 +5377,24 @@ private fun AppProtectionLockScreen(
                 fontWeight = FontWeight.Bold
             )
         }
+    }
+}
+
+@Composable
+private fun PortfolioReviewUnlockButton(enabled: Boolean, onClick: () -> Unit) {
+    Button(
+        onClick = onClick,
+        enabled = enabled,
+        shape = RoundedCornerShape(8.dp),
+        colors = ButtonDefaults.buttonColors(
+            containerColor = BrandGreen,
+            contentColor = Color.White,
+            disabledContainerColor = SoftSurface,
+            disabledContentColor = MutedText
+        ),
+        modifier = Modifier.fillMaxWidth().height(54.dp)
+    ) {
+        Text("이번 달 포트폴리오 점검", fontSize = 15.sp, fontWeight = FontWeight.ExtraBold)
     }
 }
 
@@ -5691,6 +5902,140 @@ private fun downloadCandidates(accounts: List<AccountUi>): List<DownloadCandidat
         .distinctBy { it.symbol.uppercase(Locale.US) }
 }
 
+private data class FeatureGuideSectionUi(
+    val title: String,
+    val color: Color,
+    val items: List<Pair<String, String>>
+)
+
+@Composable
+private fun FeatureGuideScreen(onBack: () -> Unit) {
+    val headerTopPadding = WindowInsets.statusBars.asPaddingValues().calculateTopPadding() + 12.dp
+    val sections = listOf(
+        FeatureGuideSectionUi(
+            title = "홈과 자산 관리",
+            color = NegativeBlue,
+            items = listOf(
+                "총 자산 홈" to "모든 계좌의 평가금액과 원금, 일간·누적 수익을 합산하고 보유 종목을 한곳에서 확인합니다.",
+                "계좌와 거래내역" to "계좌를 추가·정렬하고 국내·해외 종목과 현금을 등록하며 매수·매도 거래내역을 관리합니다.",
+                "장기 투자 목표" to "투자 시작일, 목표 기간, 연 목표 수익률과 목표 금액을 설정하고 현재 자산이 목표 경로를 따라가는지 확인합니다.",
+                "포트폴리오 분석" to "수익, 해외주식 세금, 리밸런싱, 종목 비중, 추세와 예상 배당 흐름을 분석합니다."
+            )
+        ),
+        FeatureGuideSectionUi(
+            title = "시뮬레이터",
+            color = SimulatorCashFlowColor,
+            items = listOf(
+                "백테스트" to "과거 데이터로 자산 비중, 적립 투자, 리밸런싱과 배당 재투입 조건을 적용해 자산 성장과 연도별 수익을 확인합니다.",
+                "배당" to "배당 ETF의 목표 월·연 배당금에 필요한 수량과 투자금을 계산하고 인원별 세금, 배당 성장 차트와 20년 월평균 배당표를 확인합니다.",
+                "자가배당" to "보유 자산을 매도해 세후 인출 목표를 만드는 흐름을 계산합니다. 해외주식 실현차익, 연 250만원 기본공제와 양도세를 반영합니다.",
+                "3ETF 분배" to "SCHD·JEPQ·QLD 비중과 생활비를 기준으로 20년 자산 흐름, 세전·세후 배당, 하락장 스트레스 결과를 계산합니다.",
+                "시나리오 비교" to "저장한 배당·자가배당·3ETF 시나리오를 함께 선택해 월 현금흐름, 총 자산, 역산 연수익률, 과거 변동성과 최대 낙폭을 비교합니다."
+            )
+        ),
+        FeatureGuideSectionUi(
+            title = "저장과 불러오기",
+            color = SimulatorAnalysisColor,
+            items = listOf(
+                "시뮬레이션 저장" to "이름을 입력해 새 조건을 저장하거나 기존 이름을 선택해 결과를 업데이트할 수 있습니다.",
+                "목록 관리" to "불러오기 목록을 길게 누르면 이름을 바꿀 수 있고, 위·아래 버튼으로 저장 순서를 조정할 수 있습니다.",
+                "마지막 상태 유지" to "백테스트와 각 현금흐름 시뮬레이터는 마지막으로 계산하거나 불러온 조건을 앱을 다시 열어도 유지합니다."
+            )
+        ),
+        FeatureGuideSectionUi(
+            title = "장기 투자 리포트",
+            color = FourAssetSchdColor,
+            items = listOf(
+                "장기 투자 상태" to "현재 수익과 목표 달성 경로, 보유 집중도와 레버리지 노출을 한 번에 점검합니다.",
+                "위기 스트레스" to "닷컴버블, 금융위기, 코로나와 금리 인상장 수준의 하락을 현재 포트폴리오에 적용해 예상 손실을 살펴봅니다.",
+                "월간 리포트" to "목표 경로 차이, 최대 보유 비중과 위기 예상 손실을 월별 장기 투자 관점으로 정리합니다."
+            )
+        ),
+        FeatureGuideSectionUi(
+            title = "잠금과 월간 점검",
+            color = CashOrange,
+            items = listOf(
+                "잠금 모드" to "약한 잠금은 1시간·하루 12회, 중간 잠금은 4시간·하루 4회와 투자 원칙 입력, 강한 잠금은 4시간·하루 4회와 QR 인증을 적용합니다.",
+                "강한 잠금의 금액 숨김" to "일반 QR 진입에서는 실제 포트폴리오 평가금액과 국내·해외 시세를 별표로 가리고 시뮬레이터는 계속 사용할 수 있습니다.",
+                "포트폴리오 점검" to "매월 1일부터 그달 점검을 완료할 때까지 QR로 점검할 수 있습니다. 점검 중인 실행에서만 실제 금액을 보여주고 앱을 나가면 다시 숨깁니다."
+            )
+        ),
+        FeatureGuideSectionUi(
+            title = "설정과 데이터",
+            color = PsuOrange,
+            items = listOf(
+                "화면과 통화" to "시스템·밝은·어두운 화면 모드와 원화·달러 표시 방식을 선택합니다.",
+                "종목과 API" to "수동 종목을 추가하고 한국투자·키움 API를 설정해 시세와 과거 가격 데이터를 갱신합니다.",
+                "데이터 다운로드" to "보유 종목과 시뮬레이션 종목의 가격·배당 데이터를 기기에 저장해 과거 데이터 기반 계산에 사용합니다.",
+                "백업과 복원" to "계좌, 거래내역, 목표, 저장 시뮬레이션과 다운로드 데이터를 파일로 저장하고 Google Drive 등에서 다시 불러옵니다."
+            )
+        )
+    )
+
+    ScreenColumn(topPadding = 0) {
+        Spacer(modifier = Modifier.height(headerTopPadding))
+        PlainTopBar(title = "전체 기능 안내", onBack = onBack, rightText = "", onRightClick = {})
+        Spacer(modifier = Modifier.height(24.dp))
+        Text(
+            "스노우볼 기능 지도",
+            color = TextPrimary,
+            fontSize = 25.sp,
+            fontWeight = FontWeight.ExtraBold
+        )
+        Spacer(modifier = Modifier.height(7.dp))
+        Text(
+            "앱에서 할 수 있는 일을 기능별로 모았습니다.",
+            color = TextSecondary,
+            fontSize = 14.sp,
+            lineHeight = 20.sp
+        )
+        Spacer(modifier = Modifier.height(38.dp))
+
+        sections.forEachIndexed { sectionIndex, section ->
+            FeatureGuideSection(section)
+            if (sectionIndex < sections.lastIndex) Spacer(modifier = Modifier.height(42.dp))
+        }
+        Spacer(modifier = Modifier.height(32.dp))
+    }
+}
+
+@Composable
+private fun FeatureGuideSection(section: FeatureGuideSectionUi) {
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Box(
+            modifier = Modifier
+                .width(5.dp)
+                .height(24.dp)
+                .clip(RoundedCornerShape(3.dp))
+                .background(section.color)
+        )
+        Spacer(modifier = Modifier.width(11.dp))
+        Text(section.title, color = TextPrimary, fontSize = 22.sp, fontWeight = FontWeight.ExtraBold)
+    }
+    Spacer(modifier = Modifier.height(14.dp))
+    section.items.forEachIndexed { index, (title, description) ->
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(vertical = 12.dp),
+            verticalAlignment = Alignment.Top
+        ) {
+            Box(
+                modifier = Modifier
+                    .padding(top = 7.dp)
+                    .size(7.dp)
+                    .clip(CircleShape)
+                    .background(section.color.copy(alpha = 0.85f))
+            )
+            Spacer(modifier = Modifier.width(12.dp))
+            Column(modifier = Modifier.weight(1f)) {
+                Text(title, color = TextPrimary, fontSize = 17.sp, fontWeight = FontWeight.ExtraBold)
+                Spacer(modifier = Modifier.height(4.dp))
+                Text(description, color = TextSecondary, fontSize = 13.sp, lineHeight = 19.sp)
+            }
+        }
+        if (index < section.items.lastIndex) DividerLine()
+    }
+}
+
 @Composable
 private fun DisplayModeSettingsScreen(
     selectedMode: String,
@@ -5928,7 +6273,7 @@ private fun AccountDrawer(
                     Spacer(modifier = Modifier.width(16.dp))
                     Column {
                         Text("총 자산", color = TextSecondary, fontSize = 14.sp)
-                        Text(formatWon(accounts.sumOf { it.totalAmount }), color = TextPrimary, fontSize = 23.sp, fontWeight = FontWeight.ExtraBold, lineHeight = 25.sp)
+                        Text(formatWon(accounts.sumOf { it.totalAmount }), color = portfolioAmountColor(formatWon(accounts.sumOf { it.totalAmount }), TextPrimary), fontSize = 23.sp, fontWeight = FontWeight.ExtraBold, lineHeight = 25.sp)
                     }
                 }
             }
@@ -5945,6 +6290,7 @@ private fun AccountDrawer(
 private fun AccountRow(account: AccountUi, compactName: Boolean = false, onClick: () -> Unit) {
     val amountFontSize = if (compactName) 17.sp else 21.sp
     val amountLineHeight = if (compactName) 19.sp else 23.sp
+    val amountText = formatWon(account.totalAmount)
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -5963,7 +6309,7 @@ private fun AccountRow(account: AccountUi, compactName: Boolean = false, onClick
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis
             )
-            Text(formatWon(account.totalAmount), color = TextPrimary, fontSize = amountFontSize, fontWeight = FontWeight.ExtraBold, lineHeight = amountLineHeight)
+            Text(amountText, color = portfolioAmountColor(amountText, TextPrimary), fontSize = amountFontSize, fontWeight = FontWeight.ExtraBold, lineHeight = amountLineHeight)
         }
     }
 }
@@ -6471,7 +6817,7 @@ private fun TradeAssetScreen(
 private fun DetailMetricRow(label: String, value: String) {
     Row(modifier = Modifier.fillMaxWidth().padding(vertical = 13.dp), verticalAlignment = Alignment.CenterVertically) {
         Text(label, color = TextSecondary, fontSize = 18.sp, modifier = Modifier.weight(1f))
-        Text(value, color = TextPrimary, fontSize = 20.sp, fontWeight = FontWeight.Bold, textAlign = TextAlign.End)
+        Text(value, color = portfolioAmountColor(value, TextPrimary), fontSize = 20.sp, fontWeight = FontWeight.Bold, textAlign = TextAlign.End)
     }
 }
 
@@ -6510,7 +6856,7 @@ private fun TradeHistoryRow(
             Text(caption, color = TextSecondary, fontSize = 15.sp)
         }
         Column(horizontalAlignment = Alignment.End) {
-            Text(amount, color = TextPrimary, fontSize = 18.sp, fontWeight = FontWeight.ExtraBold)
+            Text(amount, color = portfolioAmountColor(amount, TextPrimary), fontSize = 18.sp, fontWeight = FontWeight.ExtraBold)
             Text(formatPercent(rate), color = color, fontSize = 14.sp, fontWeight = FontWeight.Bold)
         }
     }
@@ -6590,7 +6936,7 @@ private fun BacktestToolSwitcher(selected: String, onSelect: (String) -> Unit) {
     Column(modifier = Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
         listOf(
             listOf("백테스트", "배당", "자가배당"),
-            listOf("3자산 분배", "시나리오 비교", "은퇴 성공확률")
+            listOf("3ETF 분배", "시나리오 비교")
         ).forEach { rowLabels ->
             Row(
                 modifier = Modifier.fillMaxWidth(),
@@ -6612,7 +6958,7 @@ private fun BacktestToolSwitcher(selected: String, onSelect: (String) -> Unit) {
                         Text(
                             label,
                             color = if (active) Color.White else toolColor,
-                            fontSize = if (label == "은퇴 성공확률") 12.sp else 14.sp,
+                            fontSize = 14.sp,
                             fontWeight = FontWeight.ExtraBold
                         )
                     }
@@ -6624,8 +6970,47 @@ private fun BacktestToolSwitcher(selected: String, onSelect: (String) -> Unit) {
 
 private fun simulatorToolColor(label: String): Color = when (label) {
     "백테스트" -> SimulatorBacktestColor
-    "배당", "자가배당", "3자산 분배" -> SimulatorCashFlowColor
+    "배당", "자가배당", "3ETF 분배" -> SimulatorCashFlowColor
     else -> SimulatorAnalysisColor
+}
+
+private fun <T> moveListItem(items: MutableList<T>, fromIndex: Int, toIndex: Int): Boolean {
+    if (fromIndex !in items.indices || toIndex !in items.indices || fromIndex == toIndex) return false
+    val item = items.removeAt(fromIndex)
+    items.add(toIndex, item)
+    return true
+}
+
+@Composable
+private fun PresetOrderControls(
+    canMoveUp: Boolean,
+    canMoveDown: Boolean,
+    onMoveUp: () -> Unit,
+    onMoveDown: () -> Unit
+) {
+    Row(horizontalArrangement = Arrangement.spacedBy(2.dp)) {
+        PresetOrderButton("↑", canMoveUp, onMoveUp)
+        PresetOrderButton("↓", canMoveDown, onMoveDown)
+    }
+}
+
+@Composable
+private fun PresetOrderButton(symbol: String, enabled: Boolean, onClick: () -> Unit) {
+    Box(
+        modifier = Modifier
+            .size(36.dp)
+            .clip(CircleShape)
+            .background(if (enabled) SoftSurface else Color.Transparent)
+            .clickable(enabled = enabled, onClick = onClick),
+        contentAlignment = Alignment.Center
+    ) {
+        Text(
+            symbol,
+            color = if (enabled) TextPrimary else MutedText.copy(alpha = 0.45f),
+            fontSize = 18.sp,
+            fontWeight = FontWeight.ExtraBold
+        )
+    }
 }
 
 @Composable
@@ -6780,13 +7165,13 @@ private fun SimulationPresetRenameDialog(
 private fun scenarioComparisonTypeLabel(type: ScenarioComparisonType): String = when (type) {
     ScenarioComparisonType.DIVIDEND -> "배당"
     ScenarioComparisonType.SELF_DIVIDEND -> "자가배당"
-    ScenarioComparisonType.THREE_ASSET -> "3자산 분배"
+    ScenarioComparisonType.THREE_ASSET -> "3ETF 분배"
 }
 
 private fun scenarioComparisonTypeCashFlowLabel(type: ScenarioComparisonType): String = when (type) {
     ScenarioComparisonType.DIVIDEND -> "세후 월배당"
     ScenarioComparisonType.SELF_DIVIDEND -> "세후 월인출"
-    ScenarioComparisonType.THREE_ASSET -> "월 생활비"
+    ScenarioComparisonType.THREE_ASSET -> "세후 월배당"
 }
 
 private fun scenarioComparisonColor(index: Int): Color = listOf(
@@ -6798,7 +7183,47 @@ private fun scenarioComparisonColor(index: Int): Color = listOf(
     FourAssetQldColor
 )[index.mod(6)]
 
-private fun scenarioComparisonCandidates(context: Context): List<ScenarioComparisonCandidate> {
+private fun dividendScenarioProjectionRows(
+    context: Context,
+    preset: DividendSimulationPreset,
+    usdKrw: Double
+): List<DividendGrowthProjectionRow> {
+    val candidate = dividendCandidates()
+        .firstOrNull { it.ticker.equals(preset.ticker, ignoreCase = true) }
+        ?: return preset.projectionRows
+    val annualRates = historicalAnnualRates(context, candidate.ticker) ?: return preset.projectionRows
+    val people = preset.people.ifEmpty { listOf(DividendPersonUi(1L, "본인")) }
+    val targetAmount = preset.targetInput.filter(Char::isDigit).toLongOrNull() ?: 0L
+    val latestPriceWon = annualRates.latestPrice * if (candidate.currency == "USD") usdKrw else 1.0
+    val dividendYield = annualRates.dividendYieldPercent ?: candidate.yieldRate
+    val grossAnnualDividendPerShare = latestPriceWon * dividendYield / 100.0
+    val withholdingTaxRate = dividendWithholdingTaxRate(candidate)
+    val shares = when (preset.modeIndex) {
+        0 -> requiredDividendShares(
+            grossAnnualDividendPerShare,
+            targetAmount.coerceAtMost(Long.MAX_VALUE / 12) * 12,
+            people,
+            withholdingTaxRate
+        )
+        1 -> requiredDividendShares(
+            grossAnnualDividendPerShare,
+            targetAmount,
+            people,
+            withholdingTaxRate
+        )
+        else -> if (latestPriceWon > 0.0) (targetAmount / latestPriceWon).roundToLong() else 0L
+    }.coerceAtLeast(0L)
+    return dividendGrowthProjectionRows(
+        grossAnnualDividend = shares * grossAnnualDividendPerShare,
+        initialAsset = (shares * latestPriceWon).roundToLong(),
+        dividendGrowthRate = annualRates.dividendGrowthCagrPercent ?: candidate.dividendGrowth5y,
+        priceGrowthRate = annualRates.priceCagrPercent,
+        people = people,
+        withholdingTaxRate = withholdingTaxRate
+    ).ifEmpty { preset.projectionRows }
+}
+
+private fun scenarioComparisonCandidates(context: Context, usdKrw: Double): List<ScenarioComparisonCandidate> {
     if (savedDividendSimulationPresetsCache.isEmpty()) {
         savedDividendSimulationPresetsCache.addAll(loadSavedDividendPresets(context))
     }
@@ -6812,7 +7237,8 @@ private fun scenarioComparisonCandidates(context: Context): List<ScenarioCompari
     val candidates = mutableListOf<ScenarioComparisonCandidate>()
     savedDividendSimulationPresetsCache.forEach { preset ->
         val id = "dividend:${preset.name}"
-        val series = preset.projectionRows.takeIf { it.isNotEmpty() }?.let { rows ->
+        val refreshedRows = dividendScenarioProjectionRows(context, preset, usdKrw)
+        val series = refreshedRows.takeIf { it.isNotEmpty() }?.let { rows ->
             ScenarioComparisonSeries(
                 id = id,
                 name = preset.name,
@@ -6832,13 +7258,21 @@ private fun scenarioComparisonCandidates(context: Context): List<ScenarioCompari
     }
     savedSelfDividendPresetsCache.forEach { preset ->
         val id = "self_dividend:${preset.name}"
-        val series = preset.result.takeIf { it.isNotEmpty() }?.let { rows ->
+        val refreshedRows = calculateSelfDividendProjection(context, preset.assets)
+            .takeIf { it.isNotEmpty() }
+            ?: preset.result
+        val series = refreshedRows.takeIf { it.isNotEmpty() }?.let { rows ->
             ScenarioComparisonSeries(
                 id = id,
                 name = preset.name,
                 type = ScenarioComparisonType.SELF_DIVIDEND,
                 points = rows.map { row ->
-                    ScenarioComparisonPoint(row.year, row.monthlyTakeHome, row.totalAsset)
+                    ScenarioComparisonPoint(
+                        year = row.year,
+                        monthlyCashFlowWon = row.monthlyTakeHome,
+                        totalAssetWon = row.totalAsset,
+                        annualPortfolioOutflowWon = row.grossSale
+                    )
                 }
             )
         }
@@ -6856,19 +7290,12 @@ private fun scenarioComparisonCandidates(context: Context): List<ScenarioCompari
     }
     savedFourAssetDistributionPresetsCache.forEach { preset ->
         val id = "three_asset:${preset.name}"
-        val rows = calculateFourAssetRetirement(fourAssetRetirementInput(preset)).rows
+        val rows = calculateFourAssetRetirement(fourAssetRetirementInput(preset, context)).rows
         val series = rows.takeIf { it.isNotEmpty() }?.let {
-            ScenarioComparisonSeries(
+            ScenarioComparisonEngine.fromThreeAssetRows(
                 id = id,
                 name = preset.name,
-                type = ScenarioComparisonType.THREE_ASSET,
-                points = it.map { row ->
-                    ScenarioComparisonPoint(
-                        year = row.year,
-                        monthlyCashFlowWon = row.actualAnnualCashFlowWon / 12L,
-                        totalAssetWon = row.totalAssetWon
-                    )
-                }
+                rows = it
             )
         }
         candidates += ScenarioComparisonCandidate(
@@ -6887,9 +7314,12 @@ private fun scenarioComparisonCandidates(context: Context): List<ScenarioCompari
 }
 
 @Composable
-private fun ScenarioComparisonContent() {
+private fun ScenarioComparisonContent(usdKrw: Double) {
     val context = LocalContext.current
-    val candidates = remember(context) { scenarioComparisonCandidates(context) }
+    var candidateRevision by remember { mutableIntStateOf(0) }
+    val candidates = remember(context, usdKrw, candidateRevision) {
+        scenarioComparisonCandidates(context, usdKrw)
+    }
     val availableCandidates = candidates.filter { it.series != null }
     val selectedIds = remember(candidates) {
         val availableIds = availableCandidates.map { it.id }.toSet()
@@ -6901,6 +7331,31 @@ private fun ScenarioComparisonContent() {
     var metricIndex by remember(context) { mutableIntStateOf(loadScenarioComparisonMetric(context)) }
     val selectedCandidates = candidates.filter { it.id in selectedIds && it.series != null }
     val selectedSeries = selectedCandidates.mapNotNull { it.series }
+    var historicalEstimates by remember {
+        mutableStateOf<Map<String, HistoricalVolatilityEstimate?>>(emptyMap())
+    }
+    var historicalMetricsLoading by remember { mutableStateOf(selectedCandidates.isNotEmpty()) }
+
+    LaunchedEffect(selectedCandidates.map { it.id }) {
+        if (selectedCandidates.isEmpty()) {
+            historicalEstimates = emptyMap()
+            historicalMetricsLoading = false
+        } else {
+            historicalMetricsLoading = true
+            historicalEstimates = withContext(Dispatchers.IO) {
+                selectedCandidates
+                    .flatMap { it.historicalAllocations }
+                    .map { it.ticker.trim().uppercase(Locale.US) }
+                    .distinct()
+                    .forEach { ticker -> refreshHistoricalAnnualRates(context, ticker) }
+                selectedCandidates.associate { candidate ->
+                    candidate.id to loadHistoricalVolatility(context, candidate)
+                }
+            }
+            historicalMetricsLoading = false
+            candidateRevision += 1
+        }
+    }
 
     fun toggleCandidate(candidate: ScenarioComparisonCandidate) {
         if (candidate.series == null) return
@@ -6923,7 +7378,7 @@ private fun ScenarioComparisonContent() {
         }
         Spacer(modifier = Modifier.height(8.dp))
         Text(
-            "저장된 배당·자가배당·3자산 분배 결과 중 2개 이상을 선택하세요.",
+            "저장된 배당·자가배당·3ETF 분배 결과 중 2개 이상을 선택하세요.",
             color = TextSecondary,
             fontSize = 13.sp,
             lineHeight = 19.sp
@@ -7000,7 +7455,11 @@ private fun ScenarioComparisonContent() {
         return
     }
 
-    ScenarioComparisonSummaryCard(selectedSeries)
+    ScenarioComparisonSummaryCard(
+        series = selectedSeries,
+        historicalEstimates = historicalEstimates,
+        historicalMetricsLoading = historicalMetricsLoading
+    )
     Spacer(modifier = Modifier.height(14.dp))
     BacktestCard {
         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -7026,7 +7485,9 @@ private fun ScenarioComparisonContent() {
 
 @Composable
 private fun ScenarioComparisonSummaryCard(
-    series: List<ScenarioComparisonSeries>
+    series: List<ScenarioComparisonSeries>,
+    historicalEstimates: Map<String, HistoricalVolatilityEstimate?>,
+    historicalMetricsLoading: Boolean
 ) {
     val summaries = series.mapNotNull { scenario ->
         ScenarioComparisonEngine.summarize(scenario)?.let { scenario to it }
@@ -7065,6 +7526,46 @@ private fun ScenarioComparisonSummaryCard(
             Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 ScenarioComparisonMetric("20년 최종 자산", formatWon(summary.finalAssetWon), Modifier.weight(1f))
                 ScenarioComparisonMetric("20년 누적 현금흐름", formatWon(summary.cumulativeCashFlowWon), Modifier.weight(1f))
+            }
+            Spacer(modifier = Modifier.height(8.dp))
+            val historicalEstimate = historicalEstimates[scenario.id]
+            val historicalValue = { value: Double ->
+                when {
+                    historicalMetricsLoading -> "계산 중"
+                    historicalEstimate == null -> "데이터 부족"
+                    else -> "${formatDecimal(value)}%"
+                }
+            }
+            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                ScenarioComparisonMetric(
+                    "과거 연환산 수익률",
+                    historicalValue(historicalEstimate?.annualizedReturnPercent ?: 0.0),
+                    Modifier.weight(1f)
+                )
+                ScenarioComparisonMetric(
+                    "과거 연환산 변동성",
+                    historicalValue(historicalEstimate?.annualizedVolatilityPercent ?: 0.0),
+                    Modifier.weight(1f)
+                )
+                ScenarioComparisonMetric(
+                    "최대 낙폭",
+                    historicalValue(historicalEstimate?.maximumDrawdownPercent?.let { -it } ?: 0.0),
+                    Modifier.weight(1f)
+                )
+            }
+            if (!historicalMetricsLoading) {
+                Spacer(modifier = Modifier.height(7.dp))
+                Text(
+                    historicalEstimate?.let { estimate ->
+                        "${estimate.tickers.joinToString(" · ")} 월말 조정종가 · " +
+                            "수익률은 종목별 상장 후 전체 · 변동성/낙폭은 공통기간 " +
+                            "${estimate.startMonth}~${estimate.endMonth} · ${estimate.monthlyObservationCount}개월"
+                    } ?: "과거 가격 데이터가 부족해 수익률, 변동성과 최대 낙폭을 계산하지 못했습니다.",
+                    color = TextSecondary,
+                    fontSize = 10.sp,
+                    lineHeight = 15.sp,
+                    fontWeight = FontWeight.Bold
+                )
             }
         }
     }
@@ -7265,7 +7766,7 @@ private fun ScenarioComparisonTable(series: List<ScenarioComparisonSeries>, metr
 @Composable
 private fun RetirementSuccessContent() {
     val context = LocalContext.current
-    val candidates = remember(context) { scenarioComparisonCandidates(context) }
+    val candidates = remember(context) { scenarioComparisonCandidates(context, DefaultUsdKrw) }
     val availableCandidates = candidates.filter { it.series != null }
     val selectedIds = remember(candidates) {
         val availableIds = availableCandidates.map { it.id }.toSet()
@@ -7331,7 +7832,7 @@ private fun RetirementSuccessContent() {
         }
         Spacer(modifier = Modifier.height(8.dp))
         Text(
-            "저장된 배당·자가배당·3자산 분배 결과를 선택하면 5,000개 경로를 자동 계산합니다.",
+            "저장된 배당·자가배당·3ETF 분배 결과를 선택하면 5,000개 경로를 자동 계산합니다.",
             color = TextSecondary,
             fontSize = 13.sp,
             lineHeight = 19.sp
@@ -7986,10 +8487,10 @@ private fun BacktestScreen(
 
     fun saveNamedPreset(name: String) {
         val preset = currentPreset(name, result)
-        presets.removeAll { it.name == preset.name }
-        savedBacktestPresetsCache.removeAll { it.name == preset.name }
-        presets.add(preset)
-        savedBacktestPresetsCache.add(preset)
+        val existingIndex = presets.indexOfFirst { it.name == preset.name }
+        if (existingIndex >= 0) presets[existingIndex] = preset else presets.add(preset)
+        savedBacktestPresetsCache.clear()
+        savedBacktestPresetsCache.addAll(presets)
         saveSavedBacktestPresets(context, savedBacktestPresetsCache)
         lastBacktestPresetCache = preset
         lastBacktestResultCache = preset.result
@@ -7997,6 +8498,13 @@ private fun BacktestScreen(
         presetName = ""
         showSaveDialog = false
         Toast.makeText(context, "백테스트를 저장했어요.", Toast.LENGTH_SHORT).show()
+    }
+
+    fun moveSavedPreset(fromIndex: Int, toIndex: Int) {
+        if (!moveListItem(presets, fromIndex, toIndex)) return
+        savedBacktestPresetsCache.clear()
+        savedBacktestPresetsCache.addAll(presets)
+        saveSavedBacktestPresets(context, savedBacktestPresetsCache)
     }
 
     fun renameSavedPreset(preset: BacktestPreset, newName: String) {
@@ -8068,9 +8576,8 @@ private fun BacktestScreen(
         when (selectedTool) {
             "배당" -> DividendSimulationContent(accounts, usdKrw)
             "자가배당" -> SelfDividendPlaceholderContent()
-            "3자산 분배" -> FourAssetDistributionContent()
-            "시나리오 비교" -> ScenarioComparisonContent()
-            "은퇴 성공확률" -> RetirementSuccessContent()
+            "3ETF 분배" -> FourAssetDistributionContent()
+            "시나리오 비교" -> ScenarioComparisonContent(usdKrw)
             else -> {
         BacktestCard {
             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -8188,7 +8695,12 @@ private fun BacktestScreen(
             containerColor = PanelColor,
             title = { Text("비중 입력", color = TextPrimary, fontWeight = FontWeight.ExtraBold) },
             text = {
-                Column {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(max = 360.dp)
+                        .verticalScroll(rememberScrollState())
+                ) {
                     Text("${asset.name}의 목표 비중을 입력하세요.", color = TextSecondary, fontSize = 15.sp)
                     Spacer(modifier = Modifier.height(14.dp))
                     OutlinedTextField(
@@ -8255,7 +8767,7 @@ private fun BacktestScreen(
                     if (presets.isEmpty()) {
                         Text("저장된 백테스트가 없습니다.", color = TextSecondary)
                     } else {
-                        presets.forEach { preset ->
+                        presets.forEachIndexed { index, preset ->
                             Row(
                                 modifier = Modifier
                                     .fillMaxWidth()
@@ -8287,9 +8799,21 @@ private fun BacktestScreen(
                                     .padding(vertical = 12.dp),
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
-                                Text(preset.name, color = TextPrimary, fontSize = 17.sp, fontWeight = FontWeight.Bold)
-                                Spacer(modifier = Modifier.weight(1f))
-                                Text("불러오기", color = BrandGreen, fontSize = 14.sp, fontWeight = FontWeight.Bold)
+                                Text(
+                                    preset.name,
+                                    color = TextPrimary,
+                                    fontSize = 17.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                    modifier = Modifier.weight(1f)
+                                )
+                                PresetOrderControls(
+                                    canMoveUp = index > 0,
+                                    canMoveDown = index < presets.lastIndex,
+                                    onMoveUp = { moveSavedPreset(index, index - 1) },
+                                    onMoveDown = { moveSavedPreset(index, index + 1) }
+                                )
                             }
                         }
                     }
@@ -8337,6 +8861,7 @@ private fun BacktestScreen(
 @Composable
 private fun SelfDividendPlaceholderContent() {
     val context = LocalContext.current
+    val scope = rememberCoroutineScope()
     if (savedSelfDividendPresetsCache.isEmpty()) {
         savedSelfDividendPresetsCache.addAll(loadSavedSelfDividendPresets(context))
     }
@@ -8360,6 +8885,7 @@ private fun SelfDividendPlaceholderContent() {
     var presetName by remember { mutableStateOf("") }
     var deletePreset by remember { mutableStateOf<SelfDividendPreset?>(null) }
     var renamePreset by remember { mutableStateOf<SelfDividendPreset?>(null) }
+    var isCalculating by remember { mutableStateOf(false) }
     val assetOptions = remember(context) { manualAssetOptions(context) }
 
     fun updateAsset(index: Int, next: SelfDividendAssetUi) {
@@ -8375,16 +8901,23 @@ private fun SelfDividendPlaceholderContent() {
 
     fun saveNamedPreset(name: String) {
         val preset = currentPreset(name)
-        savedPresets.removeAll { it.name == preset.name }
-        savedSelfDividendPresetsCache.removeAll { it.name == preset.name }
-        savedPresets.add(preset)
-        savedSelfDividendPresetsCache.add(preset)
+        val existingIndex = savedPresets.indexOfFirst { it.name == preset.name }
+        if (existingIndex >= 0) savedPresets[existingIndex] = preset else savedPresets.add(preset)
+        savedSelfDividendPresetsCache.clear()
+        savedSelfDividendPresetsCache.addAll(savedPresets)
         saveSavedSelfDividendPresets(context, savedSelfDividendPresetsCache)
         lastSelfDividendPresetCache = preset
         saveLastSelfDividendPreset(context, preset)
         presetName = ""
         showSaveDialog = false
         Toast.makeText(context, "자가배당을 저장했어요.", Toast.LENGTH_SHORT).show()
+    }
+
+    fun moveSavedPreset(fromIndex: Int, toIndex: Int) {
+        if (!moveListItem(savedPresets, fromIndex, toIndex)) return
+        savedSelfDividendPresetsCache.clear()
+        savedSelfDividendPresetsCache.addAll(savedPresets)
+        saveSavedSelfDividendPresets(context, savedSelfDividendPresetsCache)
     }
 
     fun renameSavedPreset(preset: SelfDividendPreset, newName: String) {
@@ -8448,21 +8981,38 @@ private fun SelfDividendPlaceholderContent() {
 
         Spacer(modifier = Modifier.height(18.dp))
         PrimaryActionButton(
-            "자가배당 계산",
-            enabled = selectedAssets.isNotEmpty(),
+            if (isCalculating) "과거 데이터 계산 중" else "자가배당 계산",
+            enabled = selectedAssets.isNotEmpty() && !isCalculating,
             onClick = {
-                val rows = calculateSelfDividendProjection(context, selectedAssets)
-                if (rows.isEmpty()) {
-                    Toast.makeText(context, "투자금과 연 인출액을 입력해 주세요.", Toast.LENGTH_SHORT).show()
-                } else {
-                    projectionRows = rows
-                    val latestPreset = SelfDividendPreset(
-                        name = "마지막 자가배당",
-                        assets = selectedAssets.toList(),
-                        result = rows
-                    )
-                    lastSelfDividendPresetCache = latestPreset
-                    saveLastSelfDividendPreset(context, latestPreset)
+                val assetsSnapshot = selectedAssets.toList()
+                scope.launch {
+                    isCalculating = true
+                    try {
+                        withContext(Dispatchers.IO) {
+                            assetsSnapshot.map { it.ticker.trim().uppercase(Locale.US) }
+                                .distinct()
+                                .forEach { ticker ->
+                                    refreshHistoricalAnnualRates(context, ticker, includeDividends = false)
+                                }
+                        }
+                        val rows = withContext(Dispatchers.Default) {
+                            calculateSelfDividendProjection(context, assetsSnapshot)
+                        }
+                        if (rows.isEmpty()) {
+                            Toast.makeText(context, "투자금과 연 인출액을 입력해 주세요.", Toast.LENGTH_SHORT).show()
+                        } else {
+                            projectionRows = rows
+                            val latestPreset = SelfDividendPreset(
+                                name = "마지막 자가배당",
+                                assets = assetsSnapshot,
+                                result = rows
+                            )
+                            lastSelfDividendPresetCache = latestPreset
+                            saveLastSelfDividendPreset(context, latestPreset)
+                        }
+                    } finally {
+                        isCalculating = false
+                    }
                 }
             }
         )
@@ -8553,7 +9103,7 @@ private fun SelfDividendPlaceholderContent() {
                     if (savedPresets.isEmpty()) {
                         Text("저장된 자가배당이 없습니다.", color = TextSecondary)
                     } else {
-                        savedPresets.forEach { preset ->
+                        savedPresets.forEachIndexed { index, preset ->
                             Row(
                                 modifier = Modifier
                                     .fillMaxWidth()
@@ -8575,10 +9125,22 @@ private fun SelfDividendPlaceholderContent() {
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
                                 Column(modifier = Modifier.weight(1f)) {
-                                    Text(preset.name, color = TextPrimary, fontSize = 17.sp, fontWeight = FontWeight.Bold)
+                                    Text(
+                                        preset.name,
+                                        color = TextPrimary,
+                                        fontSize = 17.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
                                     Text("${preset.assets.size}개 종목", color = TextSecondary, fontSize = 12.sp, fontWeight = FontWeight.Bold)
                                 }
-                                Text("불러오기", color = BrandGreen, fontSize = 14.sp, fontWeight = FontWeight.Bold)
+                                PresetOrderControls(
+                                    canMoveUp = index > 0,
+                                    canMoveDown = index < savedPresets.lastIndex,
+                                    onMoveUp = { moveSavedPreset(index, index - 1) },
+                                    onMoveDown = { moveSavedPreset(index, index + 1) }
+                                )
                             }
                         }
                     }
@@ -8669,12 +9231,45 @@ private fun FourAssetDistributionContent() {
     var inflationRate by remember { mutableStateOf(cachedPreset?.inflationRate ?: "3.0") }
     var taxAndInsuranceRate by remember { mutableStateOf(cachedPreset?.taxAndInsuranceRate ?: "23.4") }
     var stressTestEnabled by remember { mutableStateOf(cachedPreset?.stressTestEnabled ?: false) }
+    var historicalRates by remember { mutableStateOf<Map<String, HistoricalAnnualRates>>(emptyMap()) }
+    var historicalRatesLoading by remember { mutableStateOf(true) }
     var showAllocationAlert by remember { mutableStateOf(false) }
     var showSaveDialog by remember { mutableStateOf(false) }
     var showLoadDialog by remember { mutableStateOf(false) }
     var presetName by remember { mutableStateOf("") }
     var deletePreset by remember { mutableStateOf<FourAssetDistributionPreset?>(null) }
     var renamePreset by remember { mutableStateOf<FourAssetDistributionPreset?>(null) }
+
+    LaunchedEffect(Unit) {
+        historicalRatesLoading = true
+        historicalRates = withContext(Dispatchers.IO) {
+            listOf("SCHD", "JEPQ", "QLD").mapNotNull { ticker ->
+                refreshHistoricalAnnualRates(
+                    context = context,
+                    ticker = ticker,
+                    includeDividends = ticker != "QLD"
+                )?.let { ticker to it }
+            }.toMap()
+        }
+        historicalRates["SCHD"]?.let { rates ->
+            schdPrice = formatHistoricalRate(rates.latestPrice)
+            schdYield = formatHistoricalRate(rates.dividendYieldPercent ?: schdYield.toDoubleOrNull() ?: 0.0)
+            schdDividendGrowth = formatHistoricalRate(rates.dividendGrowthCagrPercent ?: schdDividendGrowth.toDoubleOrNull() ?: 0.0)
+            schdPriceGrowth = formatHistoricalRate(rates.priceCagrPercent)
+        }
+        historicalRates["JEPQ"]?.let { rates ->
+            jepqPrice = formatHistoricalRate(rates.latestPrice)
+            jepqYield = formatHistoricalRate(rates.dividendYieldPercent ?: jepqYield.toDoubleOrNull() ?: 0.0)
+            jepqDividendGrowth = formatHistoricalRate(rates.dividendGrowthCagrPercent ?: jepqDividendGrowth.toDoubleOrNull() ?: 0.0)
+            jepqPriceGrowth = formatHistoricalRate(rates.priceCagrPercent)
+        }
+        historicalRates["QLD"]?.let { rates ->
+            qldPrice = formatHistoricalRate(rates.latestPrice)
+            qldPriceGrowth = formatHistoricalRate(rates.priceCagrPercent)
+        }
+        cashYield = "0"
+        historicalRatesLoading = false
+    }
 
     fun currentAllocation(): FourAssetAllocation = FourAssetAllocation(
         schd = schdRatio.toDoubleOrNull() ?: 0.0,
@@ -8697,7 +9292,7 @@ private fun FourAssetDistributionContent() {
     }
 
     fun currentPreset(
-        name: String = "3자산 분배",
+        name: String = "3ETF 분배",
         useAppliedRatios: Boolean = false
     ) = FourAssetDistributionPreset(
         name = name,
@@ -8730,16 +9325,23 @@ private fun FourAssetDistributionContent() {
 
     fun saveNamedPreset(name: String) {
         val preset = currentPreset(name)
-        savedPresets.removeAll { it.name == preset.name }
-        savedFourAssetDistributionPresetsCache.removeAll { it.name == preset.name }
-        savedPresets.add(preset)
-        savedFourAssetDistributionPresetsCache.add(preset)
+        val existingIndex = savedPresets.indexOfFirst { it.name == preset.name }
+        if (existingIndex >= 0) savedPresets[existingIndex] = preset else savedPresets.add(preset)
+        savedFourAssetDistributionPresetsCache.clear()
+        savedFourAssetDistributionPresetsCache.addAll(savedPresets)
         saveSavedFourAssetDistributionPresets(context, savedFourAssetDistributionPresetsCache)
         lastFourAssetDistributionPresetCache = preset
         saveLastFourAssetDistributionPreset(context, preset)
         presetName = ""
         showSaveDialog = false
-        Toast.makeText(context, "3자산 분배를 저장했어요.", Toast.LENGTH_SHORT).show()
+        Toast.makeText(context, "3ETF 분배를 저장했어요.", Toast.LENGTH_SHORT).show()
+    }
+
+    fun moveSavedPreset(fromIndex: Int, toIndex: Int) {
+        if (!moveListItem(savedPresets, fromIndex, toIndex)) return
+        savedFourAssetDistributionPresetsCache.clear()
+        savedFourAssetDistributionPresetsCache.addAll(savedPresets)
+        saveSavedFourAssetDistributionPresets(context, savedFourAssetDistributionPresetsCache)
     }
 
     fun renameSavedPreset(preset: FourAssetDistributionPreset, newName: String) {
@@ -8764,23 +9366,12 @@ private fun FourAssetDistributionContent() {
         qldRatio = preset.qldRatio
         cashRatio = "0"
         appliedAllocation = FourAssetAllocation(
-            preset.appliedSchdRatio,
-            preset.appliedJepqRatio,
-            preset.appliedQldRatio,
-            0.0
+            schd = preset.appliedSchdRatio,
+            jepq = preset.appliedJepqRatio,
+            qld = preset.appliedQldRatio,
+            cash = 0.0
         )
         exchangeRate = preset.exchangeRate
-        schdPrice = preset.schdPrice
-        jepqPrice = preset.jepqPrice
-        qldPrice = preset.qldPrice
-        schdYield = preset.schdYield
-        schdDividendGrowth = preset.schdDividendGrowth
-        schdPriceGrowth = preset.schdPriceGrowth
-        jepqYield = preset.jepqYield
-        jepqDividendGrowth = preset.jepqDividendGrowth
-        jepqPriceGrowth = preset.jepqPriceGrowth
-        qldPriceGrowth = preset.qldPriceGrowth
-        cashYield = preset.cashYield
         inflationRate = preset.inflationRate
         taxAndInsuranceRate = preset.taxAndInsuranceRate
         stressTestEnabled = preset.stressTestEnabled
@@ -8808,7 +9399,7 @@ private fun FourAssetDistributionContent() {
         jepqDividendGrowth = (jepqDividendGrowth.toDoubleOrNull() ?: 2.0) / 100.0,
         jepqPriceGrowth = (jepqPriceGrowth.toDoubleOrNull() ?: 2.0) / 100.0,
         qldPriceGrowth = (qldPriceGrowth.toDoubleOrNull() ?: 15.0) / 100.0,
-        cashYield = (cashYield.toDoubleOrNull() ?: 3.0) / 100.0,
+        cashYield = 0.0,
         inflationRate = (inflationRate.toDoubleOrNull() ?: 3.0) / 100.0,
         taxAndInsuranceRate = (taxAndInsuranceRate.toDoubleOrNull() ?: 23.4) / 100.0,
         stressTestEnabled = stressTestEnabled
@@ -8825,7 +9416,7 @@ private fun FourAssetDistributionContent() {
 
     BacktestCard {
         Row(verticalAlignment = Alignment.CenterVertically) {
-            SectionTitle("3자산 분배 설정")
+            SectionTitle("3ETF 분배 설정")
             Spacer(modifier = Modifier.weight(1f))
             Text(
                 "불러오기",
@@ -8849,32 +9440,51 @@ private fun FourAssetDistributionContent() {
 
     Spacer(modifier = Modifier.height(14.dp))
     BacktestCard {
-        SectionTitle("환율 및 초기 주가")
+        SectionTitle("환율 및 최신 주가")
         Spacer(modifier = Modifier.height(12.dp))
         FourAssetDecimalInputRow("기준 환율", exchangeRate, "원") { exchangeRate = it }
-        FourAssetDecimalInputRow("SCHD 주가", schdPrice, "$") { schdPrice = it }
-        FourAssetDecimalInputRow("JEPQ 주가", jepqPrice, "$") { jepqPrice = it }
-        FourAssetDecimalInputRow("QLD 주가", qldPrice, "$") { qldPrice = it }
+        FourAssetCalculatedValueRow("SCHD 최신 수정주가", schdPrice, "$")
+        FourAssetCalculatedValueRow("JEPQ 최신 수정주가", jepqPrice, "$")
+        FourAssetCalculatedValueRow("QLD 최신 수정주가", qldPrice, "$")
     }
 
     Spacer(modifier = Modifier.height(14.dp))
     BacktestCard {
-        SectionTitle("연간 요율")
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            SectionTitle("과거 데이터 연간 요율")
+            Spacer(modifier = Modifier.weight(1f))
+            Text(
+                if (historicalRatesLoading) "계산 중" else "자동 계산",
+                color = if (historicalRatesLoading) TextSecondary else BrandGreen,
+                fontSize = 12.sp,
+                fontWeight = FontWeight.ExtraBold
+            )
+        }
+        Text(
+            "수정주가는 상장 후 최신일까지, 배당률은 최근 12개월, 배당성장은 첫 비교 가능 연도부터 계산합니다.",
+            color = TextSecondary,
+            fontSize = 11.sp,
+            lineHeight = 17.sp
+        )
         Spacer(modifier = Modifier.height(12.dp))
         FourAssetRateGroup("SCHD", FourAssetSchdColor) {
-            FourAssetDecimalInputRow("배당률", schdYield, "%") { schdYield = it }
-            FourAssetDecimalInputRow("배당성장", schdDividendGrowth, "%") { schdDividendGrowth = it }
-            FourAssetDecimalInputRow("주가성장", schdPriceGrowth, "%", allowNegative = true) { schdPriceGrowth = it }
+            FourAssetCalculatedValueRow("최근 12개월 배당률", schdYield, "%")
+            FourAssetCalculatedValueRow("상장 후 배당성장", schdDividendGrowth, "%")
+            FourAssetCalculatedValueRow("상장 후 주가성장", schdPriceGrowth, "%")
+            FourAssetHistoricalPeriod(historicalRates["SCHD"])
         }
         Spacer(modifier = Modifier.height(10.dp))
         FourAssetRateGroup("JEPQ", FourAssetJepqColor) {
-            FourAssetDecimalInputRow("배당률", jepqYield, "%") { jepqYield = it }
-            FourAssetDecimalInputRow("배당성장", jepqDividendGrowth, "%") { jepqDividendGrowth = it }
-            FourAssetDecimalInputRow("주가성장", jepqPriceGrowth, "%", allowNegative = true) { jepqPriceGrowth = it }
+            FourAssetCalculatedValueRow("최근 12개월 배당률", jepqYield, "%")
+            FourAssetCalculatedValueRow("상장 후 배당성장", jepqDividendGrowth, "%")
+            FourAssetCalculatedValueRow("상장 후 주가성장", jepqPriceGrowth, "%")
+            FourAssetHistoricalPeriod(historicalRates["JEPQ"])
         }
         Spacer(modifier = Modifier.height(10.dp))
-        FourAssetDecimalInputRow("QLD 성장", qldPriceGrowth, "%", allowNegative = true) { qldPriceGrowth = it }
-        FourAssetDecimalInputRow("현금 이자", cashYield, "%") { cashYield = it }
+        FourAssetRateGroup("QLD", FourAssetQldColor) {
+            FourAssetCalculatedValueRow("상장 후 주가성장", qldPriceGrowth, "%")
+            FourAssetHistoricalPeriod(historicalRates["QLD"])
+        }
     }
 
     Spacer(modifier = Modifier.height(14.dp))
@@ -8924,9 +9534,15 @@ private fun FourAssetDistributionContent() {
     }
 
     Spacer(modifier = Modifier.height(14.dp))
-    FourAssetResultContent(result)
+    if (historicalRatesLoading) {
+        BacktestCard {
+            Text("상장 후 전체 과거 데이터를 계산하고 있습니다.", color = TextSecondary, fontSize = 14.sp, fontWeight = FontWeight.Bold)
+        }
+    } else {
+        FourAssetResultContent(result)
+    }
     Spacer(modifier = Modifier.height(14.dp))
-    PrimaryActionButton("3자산 분배 저장", enabled = true) {
+    PrimaryActionButton("3ETF 분배 저장", enabled = !historicalRatesLoading) {
         showSaveDialog = true
     }
 
@@ -8952,7 +9568,7 @@ private fun FourAssetDistributionContent() {
 
     if (showSaveDialog) {
         SimulationPresetSaveDialog(
-            title = "3자산 분배 저장",
+            title = "3ETF 분배 저장",
             name = presetName,
             existingNames = savedPresets.map { it.name },
             onNameChange = { presetName = it },
@@ -8966,7 +9582,7 @@ private fun FourAssetDistributionContent() {
         AlertDialog(
             onDismissRequest = { showLoadDialog = false },
             containerColor = PanelColor,
-            title = { Text("3자산 분배 불러오기", color = TextPrimary, fontWeight = FontWeight.ExtraBold) },
+            title = { Text("3ETF 분배 불러오기", color = TextPrimary, fontWeight = FontWeight.ExtraBold) },
             text = {
                 Column(
                     modifier = Modifier
@@ -8975,9 +9591,9 @@ private fun FourAssetDistributionContent() {
                         .verticalScroll(rememberScrollState())
                 ) {
                     if (savedPresets.isEmpty()) {
-                        Text("저장된 3자산 분배가 없습니다.", color = TextSecondary)
+                        Text("저장된 3ETF 분배가 없습니다.", color = TextSecondary)
                     } else {
-                        savedPresets.forEach { preset ->
+                        savedPresets.forEachIndexed { index, preset ->
                             Row(
                                 modifier = Modifier
                                     .fillMaxWidth()
@@ -8995,10 +9611,29 @@ private fun FourAssetDistributionContent() {
                                 verticalAlignment = Alignment.CenterVertically
                             ) {
                                 Column(modifier = Modifier.weight(1f)) {
-                                    Text(preset.name, color = TextPrimary, fontSize = 17.sp, fontWeight = FontWeight.Bold)
-                                    Text("반영 비율 SCHD ${preset.appliedSchdRatio.formatOneDecimal()}% · JEPQ ${preset.appliedJepqRatio.formatOneDecimal()}%", color = TextSecondary, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                                    Text(
+                                        preset.name,
+                                        color = TextPrimary,
+                                        fontSize = 17.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                    Text(
+                                        "SCHD ${preset.appliedSchdRatio.formatOneDecimal()}% · JEPQ ${preset.appliedJepqRatio.formatOneDecimal()}% · QLD ${preset.appliedQldRatio.formatOneDecimal()}%",
+                                        color = TextSecondary,
+                                        fontSize = 11.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        maxLines = 2,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
                                 }
-                                Text("불러오기", color = BrandGreen, fontSize = 14.sp, fontWeight = FontWeight.Bold)
+                                PresetOrderControls(
+                                    canMoveUp = index > 0,
+                                    canMoveDown = index < savedPresets.lastIndex,
+                                    onMoveUp = { moveSavedPreset(index, index - 1) },
+                                    onMoveDown = { moveSavedPreset(index, index + 1) }
+                                )
                             }
                         }
                     }
@@ -9027,7 +9662,7 @@ private fun FourAssetDistributionContent() {
         AlertDialog(
             onDismissRequest = { deletePreset = null },
             containerColor = PanelColor,
-            title = { Text("3자산 분배를 삭제할까요?", color = TextPrimary, fontWeight = FontWeight.ExtraBold) },
+            title = { Text("3ETF 분배를 삭제할까요?", color = TextPrimary, fontWeight = FontWeight.ExtraBold) },
             text = { Text("${preset.name} 항목을 삭제합니다.", color = TextSecondary) },
             confirmButton = {
                 TextButton(onClick = {
@@ -9047,7 +9682,7 @@ private fun FourAssetDistributionContent() {
 @Composable
 private fun FourAssetResultContent(result: FourAssetRetirementResult) {
     BacktestCard {
-        SectionTitle("3자산 분배 결과")
+        SectionTitle("3ETF 분배 결과")
         Spacer(modifier = Modifier.height(12.dp))
         SelfDividendSummaryBox("20년 뒤 최종 자산", formatWon(result.finalAssetWon), modifier = Modifier.fillMaxWidth())
         Spacer(modifier = Modifier.height(14.dp))
@@ -9088,10 +9723,12 @@ private fun FourAssetStackedChart(rows: List<FourAssetAnnualRow>) {
             Text("단위 억원", color = TextSecondary, fontSize = 12.sp, fontWeight = FontWeight.Bold)
         }
         Spacer(modifier = Modifier.height(8.dp))
-        Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
-            FourAssetLegend("SCHD", FourAssetSchdColor)
-            FourAssetLegend("JEPQ", FourAssetJepqColor)
-            FourAssetLegend("QLD", FourAssetQldColor)
+        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
+                FourAssetLegend("SCHD", FourAssetSchdColor)
+                FourAssetLegend("JEPQ", FourAssetJepqColor)
+                FourAssetLegend("QLD", FourAssetQldColor)
+            }
             FourAssetLegend("현금", FourAssetCashColor)
         }
         Spacer(modifier = Modifier.height(8.dp))
@@ -9228,7 +9865,7 @@ private fun FourAssetReportTable(rows: List<FourAssetAnnualRow>) {
                     Text(formatManWon(row.annualExpenseWon), color = PositiveRed, fontSize = 12.sp, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f), textAlign = TextAlign.End)
                 }
                 Text(
-                    "${formatEokWon(row.schdAssetWon)} / ${formatEokWon(row.jepqAssetWon)} / ${formatEokWon(row.qldAssetWon)} / 현금 ${formatEokWon(row.cashWon)}",
+                    "SCHD ${formatEokWon(row.schdAssetWon)} / JEPQ ${formatEokWon(row.jepqAssetWon)} / QLD ${formatEokWon(row.qldAssetWon)} / 현금 ${formatEokWon(row.cashWon)}",
                     color = TextSecondary,
                     fontSize = 11.sp,
                     modifier = Modifier.padding(start = 44.dp, top = 3.dp)
@@ -9339,6 +9976,33 @@ private fun FourAssetDecimalInputRow(
 }
 
 @Composable
+private fun FourAssetCalculatedValueRow(label: String, value: String, suffix: String) {
+    Row(
+        modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Text(label, color = TextPrimary, fontSize = 14.sp, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
+        Text(value, color = TextPrimary, fontSize = 15.sp, fontWeight = FontWeight.ExtraBold, textAlign = TextAlign.End)
+        Spacer(modifier = Modifier.width(8.dp))
+        Text(suffix, color = TextSecondary, fontSize = 13.sp, modifier = Modifier.width(34.dp), textAlign = TextAlign.End)
+    }
+}
+
+@Composable
+private fun FourAssetHistoricalPeriod(rates: HistoricalAnnualRates?) {
+    Text(
+        rates?.let { "수정주가 ${it.priceStartDate}~${it.priceEndDate}" } ?: "과거 가격 데이터 부족",
+        color = TextSecondary,
+        fontSize = 10.sp,
+        fontWeight = FontWeight.Bold,
+        modifier = Modifier.padding(top = 4.dp)
+    )
+}
+
+private fun formatHistoricalRate(value: Double): String =
+    String.format(Locale.US, "%.2f", value)
+
+@Composable
 private fun FourAssetQuickButton(text: String, active: Boolean, modifier: Modifier = Modifier, onClick: () -> Unit) {
     Box(
         modifier = modifier
@@ -9355,8 +10019,14 @@ private fun FourAssetQuickButton(text: String, active: Boolean, modifier: Modifi
 private fun calculateFourAssetRetirement(input: FourAssetRetirementInput): FourAssetRetirementResult =
     ThreeAssetRetirementEngine.calculate(input)
 
-private fun fourAssetRetirementInput(preset: FourAssetDistributionPreset): FourAssetRetirementInput =
-    FourAssetRetirementInput(
+private fun fourAssetRetirementInput(
+    preset: FourAssetDistributionPreset,
+    context: Context? = null
+): FourAssetRetirementInput {
+    val schdRates = context?.let { historicalAnnualRates(it, "SCHD") }
+    val jepqRates = context?.let { historicalAnnualRates(it, "JEPQ") }
+    val qldRates = context?.let { historicalAnnualRates(it, "QLD") }
+    return FourAssetRetirementInput(
         totalCapitalWon = eokInputToWon(preset.totalCapitalEok),
         monthlyExpenseWon = manInputToWon(preset.monthlyExpenseMan),
         allocation = FourAssetAllocation(
@@ -9366,21 +10036,22 @@ private fun fourAssetRetirementInput(preset: FourAssetDistributionPreset): FourA
             cash = 0.0
         ),
         exchangeRate = (preset.exchangeRate.toDoubleOrNull() ?: 1600.0).coerceAtLeast(1.0),
-        schdPrice = (preset.schdPrice.toDoubleOrNull() ?: 80.0).coerceAtLeast(0.1),
-        jepqPrice = (preset.jepqPrice.toDoubleOrNull() ?: 50.0).coerceAtLeast(0.1),
-        qldPrice = (preset.qldPrice.toDoubleOrNull() ?: 90.0).coerceAtLeast(0.1),
-        schdYield = (preset.schdYield.toDoubleOrNull() ?: 3.0) / 100.0,
-        schdDividendGrowth = (preset.schdDividendGrowth.toDoubleOrNull() ?: 6.0) / 100.0,
-        schdPriceGrowth = (preset.schdPriceGrowth.toDoubleOrNull() ?: 5.0) / 100.0,
-        jepqYield = (preset.jepqYield.toDoubleOrNull() ?: 8.0) / 100.0,
-        jepqDividendGrowth = (preset.jepqDividendGrowth.toDoubleOrNull() ?: 2.0) / 100.0,
-        jepqPriceGrowth = (preset.jepqPriceGrowth.toDoubleOrNull() ?: 2.0) / 100.0,
-        qldPriceGrowth = (preset.qldPriceGrowth.toDoubleOrNull() ?: 15.0) / 100.0,
+        schdPrice = (schdRates?.latestPrice ?: preset.schdPrice.toDoubleOrNull() ?: 80.0).coerceAtLeast(0.1),
+        jepqPrice = (jepqRates?.latestPrice ?: preset.jepqPrice.toDoubleOrNull() ?: 50.0).coerceAtLeast(0.1),
+        qldPrice = (qldRates?.latestPrice ?: preset.qldPrice.toDoubleOrNull() ?: 90.0).coerceAtLeast(0.1),
+        schdYield = (schdRates?.dividendYieldPercent ?: preset.schdYield.toDoubleOrNull() ?: 3.0) / 100.0,
+        schdDividendGrowth = (schdRates?.dividendGrowthCagrPercent ?: preset.schdDividendGrowth.toDoubleOrNull() ?: 6.0) / 100.0,
+        schdPriceGrowth = (schdRates?.priceCagrPercent ?: preset.schdPriceGrowth.toDoubleOrNull() ?: 5.0) / 100.0,
+        jepqYield = (jepqRates?.dividendYieldPercent ?: preset.jepqYield.toDoubleOrNull() ?: 8.0) / 100.0,
+        jepqDividendGrowth = (jepqRates?.dividendGrowthCagrPercent ?: preset.jepqDividendGrowth.toDoubleOrNull() ?: 2.0) / 100.0,
+        jepqPriceGrowth = (jepqRates?.priceCagrPercent ?: preset.jepqPriceGrowth.toDoubleOrNull() ?: 2.0) / 100.0,
+        qldPriceGrowth = (qldRates?.priceCagrPercent ?: preset.qldPriceGrowth.toDoubleOrNull() ?: 15.0) / 100.0,
         cashYield = 0.0,
         inflationRate = (preset.inflationRate.toDoubleOrNull() ?: 3.0) / 100.0,
         taxAndInsuranceRate = (preset.taxAndInsuranceRate.toDoubleOrNull() ?: 23.4) / 100.0,
         stressTestEnabled = preset.stressTestEnabled
     )
+}
 
 private fun fourAssetChartIndexForOffset(x: Float, width: Float, count: Int): Int {
     if (count <= 1) return 0
@@ -9672,18 +10343,9 @@ private fun selfDividendExpectedAnnualReturn(ticker: String): Double =
     }
 
 private fun selfDividendDownloadedAnnualReturn(context: Context, ticker: String): Double? {
-    val points = loadHistoricalSeries(context, ticker)
-        .mapNotNull { point ->
-            val date = parseAppDate(point.date) ?: return@mapNotNull null
-            if (point.close <= 0.0) null else date to point.close
-        }
-        .sortedBy { it.first }
-    val first = points.firstOrNull() ?: return null
-    val last = points.lastOrNull() ?: return null
-    val years = java.time.temporal.ChronoUnit.DAYS.between(first.first, last.first).toDouble() / 365.25
-    if (years < 1.0 || first.second <= 0.0 || last.second <= 0.0) return null
-    val cagr = (last.second / first.second).pow(1.0 / years) - 1.0
-    return cagr.takeIf { it.isFinite() }
+    return historicalAnnualRates(context, ticker)
+        ?.priceCagrPercent
+        ?.div(100.0)
 }
 
 private fun digitsToLong(value: String): Long =
@@ -10934,12 +11596,13 @@ private fun LongTermStatusCard(
     profitRate: Double,
     goalPlan: GoalPlan
 ) {
+    val profitText = formatSignedWon(profit)
     ReportCard {
         ReportCardTitle("장기 투자 상태")
         Spacer(modifier = Modifier.height(10.dp))
         Text(
-            "${formatSignedWon(profit)} (${formatPercent(profitRate)})",
-            color = if (profit >= 0L) PositiveRed else NegativeBlue,
+            "$profitText (${formatPercent(profitRate)})",
+            color = portfolioAmountColor(profitText, if (profit >= 0L) PositiveRed else NegativeBlue),
             fontSize = 25.sp,
             lineHeight = 31.sp,
             fontWeight = FontWeight.ExtraBold
@@ -11148,12 +11811,14 @@ private fun BigAssetAmount(
     label: String,
     onToggleProfitMode: (() -> Unit)? = null
 ) {
-    Text(formatWon(amount), color = TextPrimary, fontSize = 34.sp, lineHeight = 40.sp, fontWeight = FontWeight.ExtraBold)
+    val amountText = formatWon(amount)
+    val profitText = formatSignedWon(profit)
+    Text(amountText, color = portfolioAmountColor(amountText, TextPrimary), fontSize = 34.sp, lineHeight = 40.sp, fontWeight = FontWeight.ExtraBold)
     Spacer(modifier = Modifier.height(7.dp))
     Row(verticalAlignment = Alignment.CenterVertically) {
         Text(
-            text = "${formatSignedWon(profit)} (${formatPercent(rate)}) $label",
-            color = if (profit < 0) NegativeBlue else PositiveRed,
+            text = "$profitText (${formatPercent(rate)}) $label",
+            color = portfolioAmountColor(profitText, if (profit < 0) NegativeBlue else PositiveRed),
             fontSize = 15.sp,
             fontWeight = FontWeight.Bold
         )
@@ -11641,6 +12306,8 @@ private fun GoalInputField(
 
 @Composable
 private fun HoldingRow(holding: HoldingUi) {
+    val amountText = formatWon(holding.amount)
+    val profitText = formatSignedWon(holding.dayProfit)
     Row(modifier = Modifier.fillMaxWidth().padding(vertical = 14.dp), verticalAlignment = Alignment.CenterVertically) {
         AssetBadge(holding.ticker.take(1), holding.color)
         Spacer(modifier = Modifier.width(16.dp))
@@ -11649,10 +12316,10 @@ private fun HoldingRow(holding: HoldingUi) {
             Text("${formatQuantity(holding.quantity)}주", color = TextSecondary, fontSize = 15.sp)
         }
         Column(horizontalAlignment = Alignment.End) {
-            Text(formatWon(holding.amount), color = TextPrimary, fontSize = 18.sp, fontWeight = FontWeight.ExtraBold)
+            Text(amountText, color = portfolioAmountColor(amountText, TextPrimary), fontSize = 18.sp, fontWeight = FontWeight.ExtraBold)
             Text(
-                "${formatSignedWon(holding.dayProfit)} (${formatPercent(holding.dayRate)})",
-                color = if (holding.dayProfit < 0) NegativeBlue else PositiveRed,
+                "$profitText (${formatPercent(holding.dayRate)})",
+                color = portfolioAmountColor(profitText, if (holding.dayProfit < 0) NegativeBlue else PositiveRed),
                 fontSize = 14.sp,
                 fontWeight = FontWeight.Bold
             )
@@ -11712,6 +12379,9 @@ private fun InvestmentHoldingRow(
     val activeProfit = if (profitMode == ProfitMode.TOTAL) totalProfit else dayProfit
     val activeRate = if (profitMode == ProfitMode.TOTAL) totalRate else dayRate
     val activeColor = if (activeProfit < 0) NegativeBlue else PositiveRed
+    val amountText = formatWon(holding.amount)
+    val profitText = formatSignedWon(activeProfit)
+    val currentPriceText = formatAssetPrice(holding.currentPrice, holding.ticker)
 
     Row(
         modifier = Modifier
@@ -11734,7 +12404,7 @@ private fun InvestmentHoldingRow(
             MiniPriceChart(negative = dayRate < 0)
             Spacer(modifier = Modifier.width(20.dp))
             Column(horizontalAlignment = Alignment.End) {
-                Text(formatAssetPrice(holding.currentPrice, holding.ticker), color = TextPrimary, fontSize = 16.sp, fontWeight = FontWeight.ExtraBold)
+                Text(currentPriceText, color = portfolioAmountColor(currentPriceText, TextPrimary), fontSize = 16.sp, fontWeight = FontWeight.ExtraBold)
                 Text(
                     "${formatPercent(dayRate)}",
                     color = if (dayRate < 0) NegativeBlue else PositiveRed,
@@ -11744,8 +12414,8 @@ private fun InvestmentHoldingRow(
             }
         } else {
             Column(horizontalAlignment = Alignment.End) {
-                Text(formatWon(holding.amount), color = TextPrimary, fontSize = 16.sp, fontWeight = FontWeight.ExtraBold)
-                Text("${formatSignedWon(activeProfit)} (${formatPercent(activeRate)})", color = activeColor, fontSize = 13.sp, fontWeight = FontWeight.Bold)
+                Text(amountText, color = portfolioAmountColor(amountText, TextPrimary), fontSize = 16.sp, fontWeight = FontWeight.ExtraBold)
+                Text("$profitText (${formatPercent(activeRate)})", color = portfolioAmountColor(profitText, activeColor), fontSize = 13.sp, fontWeight = FontWeight.Bold)
             }
         }
     }
@@ -12085,7 +12755,7 @@ private fun ScenarioRow(title: String, loss: String, recovery: String) {
 private fun MetricRow(label: String, value: String) {
     Row(modifier = Modifier.fillMaxWidth().padding(vertical = 11.dp), verticalAlignment = Alignment.CenterVertically) {
         Text(label, color = TextSecondary, fontSize = 16.sp, modifier = Modifier.weight(1f))
-        Text(value, color = TextPrimary, fontSize = 18.sp, fontWeight = FontWeight.ExtraBold, textAlign = TextAlign.End)
+        Text(value, color = portfolioAmountColor(value, TextPrimary), fontSize = 18.sp, fontWeight = FontWeight.ExtraBold, textAlign = TextAlign.End)
     }
 }
 
@@ -13220,6 +13890,49 @@ private suspend fun loadHistoricalVolatility(
         }
     }
     return HistoricalVolatilityEngine.calculate(allocations, priceHistory)
+}
+
+private fun historicalAnnualRates(context: Context, ticker: String): HistoricalAnnualRates? {
+    val prices = loadHistoricalSeries(context, ticker).mapNotNull { point ->
+        val date = runCatching { LocalDate.parse(point.date) }.getOrNull() ?: return@mapNotNull null
+        HistoricalPricePoint(date, point.close)
+    }
+    val dividends = loadDividendPaymentSeries(context, ticker).mapNotNull { point ->
+        val date = runCatching { LocalDate.parse(point.date) }.getOrNull() ?: return@mapNotNull null
+        HistoricalDividendPoint(date, point.amount)
+    }
+    return HistoricalRateEngine.calculate(prices, dividends)
+}
+
+private suspend fun refreshHistoricalAnnualRates(
+    context: Context,
+    ticker: String,
+    includeDividends: Boolean = true
+): HistoricalAnnualRates? {
+    val key = ticker.trim().uppercase(Locale.US)
+    val cachedPrices = loadHistoricalSeries(context, key)
+    val cachedAt = context.getSharedPreferences(VolatilityHistoryMetaPreferences, Context.MODE_PRIVATE)
+        .getLong(key, 0L)
+    val cacheIsFresh = cachedPrices.size >= 13 &&
+        System.currentTimeMillis() - cachedAt < VolatilityHistoryCacheMs
+
+    if (!cacheIsFresh) {
+        val downloadedPrices = runCatching {
+            downloadYahooHistoricalSeries(key, HistoryInterval.MONTHLY)
+        }.getOrDefault(emptyList())
+        if (downloadedPrices.size >= 2) {
+            saveVolatilityHistoricalSeries(context, key, downloadedPrices)
+            mergeHistoricalSeries(context, key, downloadedPrices)
+        }
+    }
+    if (includeDividends && (!cacheIsFresh || loadDividendPaymentSeries(context, key).isEmpty())) {
+        val downloadedDividends = runCatching { downloadYahooDividendSeries(key) }
+            .getOrDefault(emptyList())
+        if (downloadedDividends.isNotEmpty()) {
+            mergeDividendPaymentSeries(context, key, downloadedDividends)
+        }
+    }
+    return historicalAnnualRates(context, key)
 }
 
 private fun mergeHistoricalSeries(context: Context, symbol: String, newPoints: List<HistoricalPoint>): List<HistoricalPoint> {
@@ -14435,6 +15148,8 @@ private fun dividendChartUpdateSnapshotToJson(snapshot: DividendChartUpdateSnaps
     put("inputKey", snapshot.inputKey)
     put("ticker", snapshot.ticker)
     put("targetMonthlyDividend", snapshot.targetMonthlyDividend)
+    snapshot.latestPrice?.let { put("latestPrice", it) }
+    snapshot.dividendYieldPercent?.let { put("dividendYieldPercent", it) }
     put("dividendGrowthMetric", dividendMetricToJson(snapshot.dividendGrowthMetric))
     put("priceGrowthMetric", dividendMetricToJson(snapshot.priceGrowthMetric))
     put("pricePoints", dividendChartPointsToJson(snapshot.pricePoints))
@@ -14447,6 +15162,8 @@ private fun dividendChartUpdateSnapshotFromJson(item: JSONObject): DividendChart
         inputKey = item.optString("inputKey", ""),
         ticker = item.optString("ticker", "SCHD"),
         targetMonthlyDividend = item.optLong("targetMonthlyDividend", 0L),
+        latestPrice = item.takeIf { it.has("latestPrice") }?.optDouble("latestPrice"),
+        dividendYieldPercent = item.takeIf { it.has("dividendYieldPercent") }?.optDouble("dividendYieldPercent"),
         dividendGrowthMetric = dividendMetricFromJson(item.optJSONObject("dividendGrowthMetric")),
         priceGrowthMetric = dividendMetricFromJson(item.optJSONObject("priceGrowthMetric")),
         pricePoints = dividendChartPointsFromJson(item.optJSONArray("pricePoints")),
@@ -14879,21 +15596,42 @@ private fun fourAssetDistributionPresetToJson(preset: FourAssetDistributionPrese
 }
 
 private fun fourAssetDistributionPresetFromJson(item: JSONObject): FourAssetDistributionPreset {
-    val schdRatio = item.optString("schdRatio", "73.9")
-    val jepqRatio = item.optString("jepqRatio", "17.4")
-    val qldRatio = item.optString("qldRatio", "8.7")
+    fun withoutJepi(schd: Double, jepq: Double, qld: Double, removedJepi: Double): Triple<Double, Double, Double> {
+        val remaining = schd + jepq + qld
+        return if (removedJepi > 0.0 && remaining > 0.0) {
+            Triple(schd / remaining * 100.0, jepq / remaining * 100.0, qld / remaining * 100.0)
+        } else {
+            Triple(schd, jepq, qld)
+        }
+    }
+
+    val draftRatios = withoutJepi(
+        schd = item.optString("schdRatio", "73.9").toDoubleOrNull() ?: 73.9,
+        jepq = item.optString("jepqRatio", "17.4").toDoubleOrNull() ?: 17.4,
+        qld = item.optString("qldRatio", "8.7").toDoubleOrNull() ?: 8.7,
+        removedJepi = item.optString("jepiRatio", "0").toDoubleOrNull() ?: 0.0
+    )
+    val appliedRatios = withoutJepi(
+        schd = item.optDouble("appliedSchdRatio", draftRatios.first),
+        jepq = item.optDouble("appliedJepqRatio", draftRatios.second),
+        qld = item.optDouble("appliedQldRatio", draftRatios.third),
+        removedJepi = item.optDouble("appliedJepiRatio", 0.0)
+    )
+    val schdRatio = formatDecimal(draftRatios.first)
+    val jepqRatio = formatDecimal(draftRatios.second)
+    val qldRatio = formatDecimal(draftRatios.third)
     val cashRatio = "0"
     return FourAssetDistributionPreset(
-        name = item.optString("name", "3자산 분배"),
+        name = item.optString("name", "3ETF 분배"),
         totalCapitalEok = item.optString("totalCapitalEok", "13"),
         monthlyExpenseMan = item.optString("monthlyExpenseMan", "400"),
         schdRatio = schdRatio,
         jepqRatio = jepqRatio,
         qldRatio = qldRatio,
         cashRatio = cashRatio,
-        appliedSchdRatio = item.optDouble("appliedSchdRatio", schdRatio.toDoubleOrNull() ?: 73.9),
-        appliedJepqRatio = item.optDouble("appliedJepqRatio", jepqRatio.toDoubleOrNull() ?: 17.4),
-        appliedQldRatio = item.optDouble("appliedQldRatio", qldRatio.toDoubleOrNull() ?: 8.7),
+        appliedSchdRatio = appliedRatios.first,
+        appliedJepqRatio = appliedRatios.second,
+        appliedQldRatio = appliedRatios.third,
         appliedCashRatio = 0.0,
         exchangeRate = item.optString("exchangeRate", "1600"),
         schdPrice = item.optString("schdPrice", "80.0"),
@@ -15013,19 +15751,32 @@ private fun holdingExchangeRate(ticker: String, exchangeRate: Double): Double =
 private fun assetDisplayName(holding: HoldingUi): String =
     if (isKoreanTicker(holding.ticker) && holding.name.isNotBlank()) holding.name else holding.ticker
 
-private fun formatAssetPrice(value: Double, ticker: String): String =
-    if (isKoreanTicker(ticker)) formatWon(value.roundToLong()) else "$${formatDecimal(value)}"
+private fun formatAssetPrice(value: Double, ticker: String): String {
+    if (isKoreanTicker(ticker)) return formatWon(value.roundToLong())
+    val formatted = "$${formatDecimal(value)}"
+    return if (HidePortfolioAmounts) maskPortfolioAmount(formatted) else formatted
+}
 
 private fun applyCurrencyDisplay(currency: String, usdKrw: Double) {
     DisplayCurrency = currency
     DisplayUsdKrw = usdKrw.coerceAtLeast(1.0)
 }
 
-private fun formatWon(value: Long): String =
-    CurrencyDisplayFormatter.format(value, DisplayUsdKrw, DisplayCurrency == CurrencyMode.USD)
+private fun formatWon(value: Long): String {
+    val formatted = CurrencyDisplayFormatter.format(value, DisplayUsdKrw, DisplayCurrency == CurrencyMode.USD)
+    return if (HidePortfolioAmounts) maskPortfolioAmount(formatted) else formatted
+}
 
-private fun formatSignedWon(value: Long): String =
-    CurrencyDisplayFormatter.formatSigned(value, DisplayUsdKrw, DisplayCurrency == CurrencyMode.USD)
+private fun formatSignedWon(value: Long): String {
+    val formatted = CurrencyDisplayFormatter.formatSigned(value, DisplayUsdKrw, DisplayCurrency == CurrencyMode.USD)
+    return if (HidePortfolioAmounts) maskPortfolioAmount(formatted) else formatted
+}
+
+private fun maskPortfolioAmount(formatted: String): String =
+    "*".repeat(formatted.length.coerceIn(5, 14))
+
+private fun portfolioAmountColor(value: String, visibleColor: Color): Color =
+    if ('*' in value) MutedText else visibleColor
 
 private fun formatDecimal(value: Double): String =
     NumberFormat.getNumberInstance(Locale.US).apply { maximumFractionDigits = 2 }.format(value)

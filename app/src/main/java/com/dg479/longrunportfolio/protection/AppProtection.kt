@@ -46,12 +46,29 @@ data class ProtectionDailyUsage(
     val entryCount: Int
 )
 
+data class PortfolioReviewStatus(
+    val today: LocalDate,
+    val completedMonth: String?
+) {
+    val currentMonth: String = portfolioReviewMonthKey(today)
+    val isReviewAvailable: Boolean = completedMonth != currentMonth
+    val nextReviewDate: LocalDate = if (isReviewAvailable) {
+        today.withDayOfMonth(1)
+    } else {
+        today.plusMonths(1).withDayOfMonth(1)
+    }
+}
+
+fun portfolioReviewMonthKey(date: LocalDate): String =
+    "%04d-%02d".format(date.year, date.monthValue)
+
 object ProtectionStore {
     const val PreferencesName = "snowball_protection"
     const val UsageDateKey = "protection_usage_date"
     const val UsageCountKey = "protection_usage_count"
     const val LockStartedAtKey = "protection_lock_started_at"
     const val OneTimeWaitBypassKey = "protection_one_time_wait_bypass"
+    const val PortfolioReviewCompletedMonthKey = "portfolio_review_completed_month"
     private const val InstallMarkerFileName = "snowball_protection_install_marker"
 
     fun loadSettingsForAppLaunch(
@@ -173,6 +190,27 @@ object ProtectionStore {
             .edit()
             .remove(OneTimeWaitBypassKey)
             .apply()
+    }
+
+    fun loadPortfolioReviewStatus(
+        context: Context,
+        today: LocalDate = LocalDate.now()
+    ): PortfolioReviewStatus {
+        val completedMonth = context.getSharedPreferences(PreferencesName, Context.MODE_PRIVATE)
+            .getString(PortfolioReviewCompletedMonthKey, null)
+            ?.takeIf { it.matches(Regex("""\d{4}-\d{2}""")) }
+        return PortfolioReviewStatus(today = today, completedMonth = completedMonth)
+    }
+
+    fun completePortfolioReview(
+        context: Context,
+        today: LocalDate = LocalDate.now()
+    ): PortfolioReviewStatus {
+        context.getSharedPreferences(PreferencesName, Context.MODE_PRIVATE)
+            .edit()
+            .putString(PortfolioReviewCompletedMonthKey, portfolioReviewMonthKey(today))
+            .apply()
+        return PortfolioReviewStatus(today = today, completedMonth = portfolioReviewMonthKey(today))
     }
 
     fun resetToNormalForDevelopmentRun(context: Context) {
