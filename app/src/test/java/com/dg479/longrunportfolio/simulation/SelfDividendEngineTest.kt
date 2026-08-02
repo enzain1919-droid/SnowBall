@@ -6,6 +6,32 @@ import org.junit.Test
 
 class SelfDividendEngineTest {
     @Test
+    fun calculate_keepsAssetsWithoutOwnWithdrawalInCombinedPortfolio() {
+        val firstYear = SelfDividendEngine.calculate(
+            assets = listOf(
+                SelfDividendAssetInput(
+                    taxable = false,
+                    expectedAnnualReturn = 0.0,
+                    investmentAmount = 900_000_000.0,
+                    baseAnnualWithdrawal = 0.0,
+                    withdrawalGrowthRate = 0.0
+                ),
+                SelfDividendAssetInput(
+                    taxable = false,
+                    expectedAnnualReturn = 0.0,
+                    investmentAmount = 100_000_000.0,
+                    baseAnnualWithdrawal = 10_000_000.0,
+                    withdrawalGrowthRate = 0.0
+                )
+            ),
+            years = 1
+        ).single()
+
+        assertEquals(990_000_000L, firstYear.totalAsset)
+        assertEquals(10_000_000L, firstYear.grossSale)
+    }
+
+    @Test
     fun calculate_solvesGrossSaleForRequestedAfterTaxWithdrawal() {
         val rows = SelfDividendEngine.calculate(
             assets = listOf(

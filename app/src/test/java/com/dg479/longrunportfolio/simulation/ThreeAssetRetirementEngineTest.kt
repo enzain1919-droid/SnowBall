@@ -9,7 +9,7 @@ class ThreeAssetRetirementEngineTest {
     fun calculate_accumulatesDividendSurplusAsCash() {
         val result = ThreeAssetRetirementEngine.calculate(
             input = baseInput(
-                allocation = ThreeAssetAllocation(schd = 1.0, jepq = 0.0, qld = 0.0),
+                allocation = ThreeAssetAllocation(schd = 1.0, jepq = 0.0, voo = 0.0, qld = 0.0),
                 monthlyExpenseWon = 5_000_000L,
                 schdYield = 0.10
             ),
@@ -26,7 +26,7 @@ class ThreeAssetRetirementEngineTest {
     fun calculate_appliesFirstYearStressPrices() {
         val result = ThreeAssetRetirementEngine.calculate(
             input = baseInput(
-                allocation = ThreeAssetAllocation(schd = 0.5, jepq = 0.3, qld = 0.2),
+                allocation = ThreeAssetAllocation(schd = 0.5, jepq = 0.3, voo = 0.0, qld = 0.2),
                 monthlyExpenseWon = 0L,
                 stressTestEnabled = true
             ),
@@ -40,7 +40,7 @@ class ThreeAssetRetirementEngineTest {
     fun calculate_reportsOnlyCashFlowThatAssetsCanFund() {
         val result = ThreeAssetRetirementEngine.calculate(
             input = baseInput(
-                allocation = ThreeAssetAllocation(schd = 1.0, jepq = 0.0, qld = 0.0),
+                allocation = ThreeAssetAllocation(schd = 1.0, jepq = 0.0, voo = 0.0, qld = 0.0),
                 monthlyExpenseWon = 200_000_000L
             ),
             years = 1
@@ -56,7 +56,7 @@ class ThreeAssetRetirementEngineTest {
     fun calculate_includesJepqDividendAndAssetValue() {
         val result = ThreeAssetRetirementEngine.calculate(
             input = baseInput(
-                allocation = ThreeAssetAllocation(schd = 0.0, jepq = 1.0, qld = 0.0),
+                allocation = ThreeAssetAllocation(schd = 0.0, jepq = 1.0, voo = 0.0, qld = 0.0),
                 monthlyExpenseWon = 0L,
                 jepqYield = 0.08
             ),
@@ -69,12 +69,47 @@ class ThreeAssetRetirementEngineTest {
         assertEquals(1_000_000_000L, firstYear.jepqAssetWon)
     }
 
+    @Test
+    fun calculate_appliesOverseasDividendTaxSeparatelyFromOtherDeductions() {
+        val result = ThreeAssetRetirementEngine.calculate(
+            input = baseInput(
+                allocation = ThreeAssetAllocation(schd = 1.0, jepq = 0.0, voo = 0.0, qld = 0.0),
+                monthlyExpenseWon = 0L,
+                schdYield = 0.10,
+                overseasDividendTaxRate = 0.15,
+                taxAndInsuranceRate = 0.234
+            ),
+            years = 1
+        )
+
+        val firstYear = result.rows.single()
+        assertEquals(100_000_000L, firstYear.grossAnnualDividendWon)
+        assertEquals(61_600_000L, firstYear.netAnnualDividendWon)
+    }
+
+    @Test
+    fun calculate_includesVooAssetValueAndShares() {
+        val result = ThreeAssetRetirementEngine.calculate(
+            input = baseInput(
+                allocation = ThreeAssetAllocation(schd = 0.0, jepq = 0.0, voo = 1.0, qld = 0.0),
+                monthlyExpenseWon = 0L
+            ),
+            years = 1
+        )
+
+        assertEquals(1_000_000_000.0, result.initialVooShares, 0.0)
+        assertEquals(1_000_000_000L, result.rows.single().vooAssetWon)
+        assertEquals(1_000_000_000L, result.finalAssetWon)
+    }
+
     private fun baseInput(
         allocation: ThreeAssetAllocation,
         monthlyExpenseWon: Long,
         schdYield: Double = 0.0,
         jepqYield: Double = 0.0,
-        stressTestEnabled: Boolean = false
+        stressTestEnabled: Boolean = false,
+        overseasDividendTaxRate: Double = 0.0,
+        taxAndInsuranceRate: Double = 0.0
     ) = ThreeAssetRetirementInput(
         totalCapitalWon = 1_000_000_000L,
         monthlyExpenseWon = monthlyExpenseWon,
@@ -82,6 +117,7 @@ class ThreeAssetRetirementEngineTest {
         exchangeRate = 1.0,
         schdPrice = 1.0,
         jepqPrice = 1.0,
+        vooPrice = 1.0,
         qldPrice = 1.0,
         schdYield = schdYield,
         schdDividendGrowth = 0.0,
@@ -89,10 +125,12 @@ class ThreeAssetRetirementEngineTest {
         jepqYield = jepqYield,
         jepqDividendGrowth = 0.0,
         jepqPriceGrowth = 0.0,
+        vooPriceGrowth = 0.0,
         qldPriceGrowth = 0.0,
         cashYield = 0.0,
         inflationRate = 0.0,
-        taxAndInsuranceRate = 0.0,
+        overseasDividendTaxRate = overseasDividendTaxRate,
+        taxAndInsuranceRate = taxAndInsuranceRate,
         stressTestEnabled = stressTestEnabled
     )
 }

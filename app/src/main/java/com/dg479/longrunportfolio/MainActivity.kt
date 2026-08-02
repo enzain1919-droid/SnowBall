@@ -67,8 +67,11 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.OutlinedTextFieldDefaults
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
+import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.LocalContentColor
 import androidx.compose.material3.rememberDrawerState
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
@@ -137,10 +140,14 @@ import com.dg479.longrunportfolio.simulation.DividendTaxPerson
 import com.dg479.longrunportfolio.simulation.HistoricalAssetAllocation
 import com.dg479.longrunportfolio.simulation.HistoricalAnnualRates
 import com.dg479.longrunportfolio.simulation.HistoricalDividendPoint
+import com.dg479.longrunportfolio.simulation.HistoricalClosePoint
 import com.dg479.longrunportfolio.simulation.HistoricalPricePoint
 import com.dg479.longrunportfolio.simulation.HistoricalRateEngine
 import com.dg479.longrunportfolio.simulation.HistoricalVolatilityEngine
 import com.dg479.longrunportfolio.simulation.HistoricalVolatilityEstimate
+import com.dg479.longrunportfolio.simulation.KoreanAnnualInflationFallbackPercent
+import com.dg479.longrunportfolio.simulation.RollingBacktestEngine
+import com.dg479.longrunportfolio.simulation.RollingBacktestSummary
 import com.dg479.longrunportfolio.simulation.SelfDividendAssetInput
 import com.dg479.longrunportfolio.simulation.SelfDividendEngine
 import com.dg479.longrunportfolio.simulation.SelfDividendProjectionRow
@@ -157,6 +164,8 @@ import com.dg479.longrunportfolio.simulation.RetirementScenarioSuccessEngine
 import com.dg479.longrunportfolio.simulation.ThreeAssetAllocation as FourAssetAllocation
 import com.dg479.longrunportfolio.simulation.ThreeAssetAnnualRow as FourAssetAnnualRow
 import com.dg479.longrunportfolio.simulation.ThreeAssetRetirementEngine
+import com.dg479.longrunportfolio.simulation.ThreeAssetHistoricalRateEngine
+import com.dg479.longrunportfolio.simulation.ThreeAssetHistoricalRates
 import com.dg479.longrunportfolio.simulation.ThreeAssetRetirementInput as FourAssetRetirementInput
 import com.dg479.longrunportfolio.simulation.ThreeAssetRetirementResult as FourAssetRetirementResult
 import com.dg479.longrunportfolio.ui.theme.LongRunPortfolioTheme
@@ -200,6 +209,7 @@ private val CashOrange = Color(0xFFFFB02E)
 private val PsuOrange = Color(0xFFE9914A)
 private val FourAssetSchdColor = Color(0xFF10B981)
 private val FourAssetJepqColor = Color(0xFF3B82F6)
+private val FourAssetVooColor = Color(0xFFF97316)
 private val FourAssetQldColor = Color(0xFF8B5CF6)
 private val FourAssetCashColor = Color(0xFFF59E0B)
 private val SimulatorBacktestColor = Color(0xFF2563EB)
@@ -345,17 +355,24 @@ private data class FourAssetDistributionPreset(
     val name: String,
     val totalCapitalEok: String,
     val monthlyExpenseMan: String,
+    val schdEnabled: Boolean,
+    val jepqEnabled: Boolean,
+    val vooEnabled: Boolean,
+    val qldEnabled: Boolean,
     val schdRatio: String,
     val jepqRatio: String,
+    val vooRatio: String,
     val qldRatio: String,
     val cashRatio: String,
     val appliedSchdRatio: Double,
     val appliedJepqRatio: Double,
+    val appliedVooRatio: Double,
     val appliedQldRatio: Double,
     val appliedCashRatio: Double,
     val exchangeRate: String,
     val schdPrice: String,
     val jepqPrice: String,
+    val vooPrice: String,
     val qldPrice: String,
     val schdYield: String,
     val schdDividendGrowth: String,
@@ -363,9 +380,11 @@ private data class FourAssetDistributionPreset(
     val jepqYield: String,
     val jepqDividendGrowth: String,
     val jepqPriceGrowth: String,
+    val vooPriceGrowth: String,
     val qldPriceGrowth: String,
     val cashYield: String,
     val inflationRate: String,
+    val overseasDividendTaxRate: String,
     val taxAndInsuranceRate: String,
     val stressTestEnabled: Boolean
 )
@@ -493,7 +512,8 @@ private data class BacktestResultUi(
     val monthLabels: List<String> = emptyList(),
     val monthlyReturns: List<Double> = emptyList(),
     val monthlyAllocations: List<List<BacktestAllocationPoint>> = emptyList(),
-    val usedHistoricalData: Boolean = false
+    val usedHistoricalData: Boolean = false,
+    val rollingResults: List<RollingBacktestSummary> = emptyList()
 )
 
 private data class BacktestReportRow(
@@ -516,6 +536,9 @@ private data class BacktestPreset(
     val contributionAmount: String,
     val dividendReinvest: Boolean,
     val exchangeRateEnabled: Boolean = true,
+    val rollingBacktestEnabled: Boolean = false,
+    val rollingStartYear: String = "2010",
+    val rollingIntervalYears: String = "10",
     val assets: List<BacktestAssetUi>,
     val result: BacktestResultUi? = null
 )
@@ -556,6 +579,8 @@ private object HistoryInterval {
 private const val VolatilityHistoryPreferences = "long_run_volatility_history"
 private const val VolatilityHistoryMetaPreferences = "long_run_volatility_history_meta"
 private const val VolatilityHistoryCacheMs = 7L * 24L * 60L * 60L * 1_000L
+private const val ThreeAssetPriceHistoryPreferences = "three_asset_price_only_history"
+private const val ThreeAssetPriceHistoryMetaPreferences = "three_asset_price_only_history_meta"
 
 private enum class DownloadStatus {
     SUCCESS,
@@ -5929,8 +5954,8 @@ private fun FeatureGuideScreen(onBack: () -> Unit) {
                 "백테스트" to "과거 데이터로 자산 비중, 적립 투자, 리밸런싱과 배당 재투입 조건을 적용해 자산 성장과 연도별 수익을 확인합니다.",
                 "배당" to "배당 ETF의 목표 월·연 배당금에 필요한 수량과 투자금을 계산하고 인원별 세금, 배당 성장 차트와 20년 월평균 배당표를 확인합니다.",
                 "자가배당" to "보유 자산을 매도해 세후 인출 목표를 만드는 흐름을 계산합니다. 해외주식 실현차익, 연 250만원 기본공제와 양도세를 반영합니다.",
-                "3ETF 분배" to "SCHD·JEPQ·QLD 비중과 생활비를 기준으로 20년 자산 흐름, 세전·세후 배당, 하락장 스트레스 결과를 계산합니다.",
-                "시나리오 비교" to "저장한 배당·자가배당·3ETF 시나리오를 함께 선택해 월 현금흐름, 총 자산, 역산 연수익률, 과거 변동성과 최대 낙폭을 비교합니다."
+                "배당+성장" to "활성화한 SCHD·JEPQ·VOO·QLD 비중과 생활비를 기준으로 20년 자산 흐름, 세전·세후 배당, 하락장 스트레스 결과를 계산합니다.",
+                "시나리오 비교" to "저장한 배당·자가배당·배당+성장 시나리오를 함께 선택해 월 현금흐름, 총 자산, 역산 연수익률, 과거 변동성과 최대 낙폭을 비교합니다."
             )
         ),
         FeatureGuideSectionUi(
@@ -6936,7 +6961,7 @@ private fun BacktestToolSwitcher(selected: String, onSelect: (String) -> Unit) {
     Column(modifier = Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
         listOf(
             listOf("백테스트", "배당", "자가배당"),
-            listOf("3ETF 분배", "시나리오 비교")
+            listOf("배당+성장", "시나리오 비교")
         ).forEach { rowLabels ->
             Row(
                 modifier = Modifier.fillMaxWidth(),
@@ -6970,7 +6995,7 @@ private fun BacktestToolSwitcher(selected: String, onSelect: (String) -> Unit) {
 
 private fun simulatorToolColor(label: String): Color = when (label) {
     "백테스트" -> SimulatorBacktestColor
-    "배당", "자가배당", "3ETF 분배" -> SimulatorCashFlowColor
+    "배당", "자가배당", "배당+성장" -> SimulatorCashFlowColor
     else -> SimulatorAnalysisColor
 }
 
@@ -7165,7 +7190,7 @@ private fun SimulationPresetRenameDialog(
 private fun scenarioComparisonTypeLabel(type: ScenarioComparisonType): String = when (type) {
     ScenarioComparisonType.DIVIDEND -> "배당"
     ScenarioComparisonType.SELF_DIVIDEND -> "자가배당"
-    ScenarioComparisonType.THREE_ASSET -> "3ETF 분배"
+    ScenarioComparisonType.THREE_ASSET -> "배당+성장"
 }
 
 private fun scenarioComparisonTypeCashFlowLabel(type: ScenarioComparisonType): String = when (type) {
@@ -7304,9 +7329,10 @@ private fun scenarioComparisonCandidates(context: Context, usdKrw: Double): List
             type = ScenarioComparisonType.THREE_ASSET,
             series = series,
             historicalAllocations = listOf(
-                HistoricalAssetAllocation("SCHD", preset.appliedSchdRatio),
-                HistoricalAssetAllocation("JEPQ", preset.appliedJepqRatio),
-                HistoricalAssetAllocation("QLD", preset.appliedQldRatio)
+                HistoricalAssetAllocation("SCHD", if (preset.schdEnabled) preset.appliedSchdRatio else 0.0),
+                HistoricalAssetAllocation("JEPQ", if (preset.jepqEnabled) preset.appliedJepqRatio else 0.0),
+                HistoricalAssetAllocation("VOO", if (preset.vooEnabled) preset.appliedVooRatio else 0.0),
+                HistoricalAssetAllocation("QLD", if (preset.qldEnabled) preset.appliedQldRatio else 0.0)
             )
         )
     }
@@ -7347,7 +7373,16 @@ private fun ScenarioComparisonContent(usdKrw: Double) {
                     .flatMap { it.historicalAllocations }
                     .map { it.ticker.trim().uppercase(Locale.US) }
                     .distinct()
-                    .forEach { ticker -> refreshHistoricalAnnualRates(context, ticker) }
+                    .forEach { ticker ->
+                        refreshHistoricalAnnualRates(context, ticker)
+                        if (ticker in setOf("SCHD", "JEPQ", "VOO", "QLD")) {
+                            refreshThreeAssetHistoricalRates(
+                                context = context,
+                                ticker = ticker,
+                                includeDividends = ticker in setOf("SCHD", "JEPQ")
+                            )
+                        }
+                    }
                 selectedCandidates.associate { candidate ->
                     candidate.id to loadHistoricalVolatility(context, candidate)
                 }
@@ -7378,7 +7413,7 @@ private fun ScenarioComparisonContent(usdKrw: Double) {
         }
         Spacer(modifier = Modifier.height(8.dp))
         Text(
-            "저장된 배당·자가배당·3ETF 분배 결과 중 2개 이상을 선택하세요.",
+            "저장된 배당·자가배당·배당+성장 결과 중 2개 이상을 선택하세요.",
             color = TextSecondary,
             fontSize = 13.sp,
             lineHeight = 19.sp
@@ -7832,7 +7867,7 @@ private fun RetirementSuccessContent() {
         }
         Spacer(modifier = Modifier.height(8.dp))
         Text(
-            "저장된 배당·자가배당·3ETF 분배 결과를 선택하면 5,000개 경로를 자동 계산합니다.",
+            "저장된 배당·자가배당·배당+성장 결과를 선택하면 5,000개 경로를 자동 계산합니다.",
             color = TextSecondary,
             fontSize = 13.sp,
             lineHeight = 19.sp
@@ -8456,6 +8491,11 @@ private fun BacktestScreen(
     var contributionAmount by remember { mutableStateOf(cachedPreset?.contributionAmount ?: "1000000") }
     var dividendReinvest by remember { mutableStateOf(cachedPreset?.dividendReinvest ?: true) }
     var exchangeRateEnabled by remember { mutableStateOf(cachedPreset?.exchangeRateEnabled ?: true) }
+    var rollingBacktestEnabled by remember { mutableStateOf(cachedPreset?.rollingBacktestEnabled ?: false) }
+    var rollingStartYear by remember {
+        mutableStateOf(cachedPreset?.rollingStartYear ?: cachedPreset?.startYear ?: "2010")
+    }
+    var rollingIntervalYears by remember { mutableStateOf(cachedPreset?.rollingIntervalYears ?: "10") }
     var result by remember { mutableStateOf(lastBacktestResultCache ?: cachedPreset?.result) }
     var showAssetSearch by remember { mutableStateOf(false) }
     var pendingAsset by remember { mutableStateOf<AssetOption?>(null) }
@@ -8481,6 +8521,9 @@ private fun BacktestScreen(
         contributionAmount = contributionAmount,
         dividendReinvest = dividendReinvest,
         exchangeRateEnabled = exchangeRateEnabled,
+        rollingBacktestEnabled = rollingBacktestEnabled,
+        rollingStartYear = rollingStartYear,
+        rollingIntervalYears = rollingIntervalYears,
         assets = assets.toList(),
         result = savedResult
     )
@@ -8527,31 +8570,80 @@ private fun BacktestScreen(
             Toast.makeText(context, "자산 비중 합계가 100%가 되어야 합니다.", Toast.LENGTH_SHORT).show()
             return
         }
+        val currentYear = LocalDate.now().year
+        val rollingStart = rollingStartYear.toIntOrNull()
+        val rollingInterval = rollingIntervalYears.toIntOrNull()
+        if (
+            rollingBacktestEnabled &&
+            (
+                rollingStart == null ||
+                    rollingInterval == null ||
+                    rollingInterval <= 0 ||
+                    RollingBacktestEngine.windows(rollingStart, rollingInterval, currentYear).isEmpty()
+                )
+        ) {
+            Toast.makeText(
+                context,
+                "현재 연도까지 완성되는 롤링 구간이 있도록 시작 년도와 간격을 확인해 주세요.",
+                Toast.LENGTH_SHORT
+            ).show()
+            return
+        }
         scope.launch {
             isRunning = true
-            val calculated = calculateBacktestResult(
-                context = context,
-                settings = settings,
-                startYear = startYear.toIntOrNull() ?: 2010,
-                endYear = endYear.toIntOrNull() ?: LocalDate.now().year,
-                startingMoney = startingMoney.filter { it.isDigit() }.toLongOrNull() ?: 10_000_000L,
-                contributionEnabled = contributionEnabled,
-                contributionPeriod = contributionPeriod,
-                contributionAmount = contributionAmount.filter { it.isDigit() }.toLongOrNull() ?: 0L,
-                dividendReinvest = dividendReinvest,
-                exchangeRateEnabled = exchangeRateEnabled,
-                rebalanceEnabled = rebalanceEnabled,
-                rebalanceFrequency = rebalanceFrequency,
-                assets = assets.toList()
-            )
-            result = calculated
-            val latestPreset = currentPreset(savedResult = calculated)
-            lastBacktestPresetCache = latestPreset
-            lastBacktestResultCache = calculated
-            saveLastBacktestPreset(context, latestPreset)
-            isRunning = false
-            if (!calculated.usedHistoricalData) {
-                Toast.makeText(context, "과거데이터 조회가 부족해 샘플 경로로 계산했어요.", Toast.LENGTH_SHORT).show()
+            try {
+                val parsedStartingMoney = startingMoney.filter { it.isDigit() }.toLongOrNull() ?: 10_000_000L
+                val parsedContributionAmount = contributionAmount.filter { it.isDigit() }.toLongOrNull() ?: 0L
+                val calculatedBase = calculateBacktestResult(
+                    context = context,
+                    settings = settings,
+                    startYear = startYear.toIntOrNull() ?: 2010,
+                    endYear = endYear.toIntOrNull() ?: currentYear,
+                    startingMoney = parsedStartingMoney,
+                    contributionEnabled = contributionEnabled,
+                    contributionPeriod = contributionPeriod,
+                    contributionAmount = parsedContributionAmount,
+                    dividendReinvest = dividendReinvest,
+                    exchangeRateEnabled = exchangeRateEnabled,
+                    rebalanceEnabled = rebalanceEnabled,
+                    rebalanceFrequency = rebalanceFrequency,
+                    assets = assets.toList()
+                )
+                val rollingResults = if (rollingBacktestEnabled) {
+                    calculateRollingBacktestResults(
+                        context = context,
+                        settings = settings,
+                        rollingStartYear = checkNotNull(rollingStart),
+                        intervalYears = checkNotNull(rollingInterval),
+                        currentYear = currentYear,
+                        startingMoney = parsedStartingMoney,
+                        contributionEnabled = contributionEnabled,
+                        contributionPeriod = contributionPeriod,
+                        contributionAmount = parsedContributionAmount,
+                        dividendReinvest = dividendReinvest,
+                        exchangeRateEnabled = exchangeRateEnabled,
+                        rebalanceEnabled = rebalanceEnabled,
+                        rebalanceFrequency = rebalanceFrequency,
+                        assets = assets.toList()
+                    )
+                } else {
+                    emptyList()
+                }
+                val calculated = calculatedBase.copy(rollingResults = rollingResults)
+                result = calculated
+                val latestPreset = currentPreset(savedResult = calculated)
+                lastBacktestPresetCache = latestPreset
+                lastBacktestResultCache = calculated
+                saveLastBacktestPreset(context, latestPreset)
+                if (!calculated.usedHistoricalData) {
+                    Toast.makeText(context, "과거데이터 조회가 부족해 샘플 경로로 계산했어요.", Toast.LENGTH_SHORT).show()
+                }
+            } catch (cancelled: kotlinx.coroutines.CancellationException) {
+                throw cancelled
+            } catch (_: Exception) {
+                Toast.makeText(context, "백테스트 계산 중 오류가 발생했어요.", Toast.LENGTH_SHORT).show()
+            } finally {
+                isRunning = false
             }
         }
     }
@@ -8576,7 +8668,7 @@ private fun BacktestScreen(
         when (selectedTool) {
             "배당" -> DividendSimulationContent(accounts, usdKrw)
             "자가배당" -> SelfDividendPlaceholderContent()
-            "3ETF 분배" -> FourAssetDistributionContent()
+            "배당+성장" -> FourAssetDistributionContent()
             "시나리오 비교" -> ScenarioComparisonContent(usdKrw)
             else -> {
         BacktestCard {
@@ -8609,6 +8701,12 @@ private fun BacktestScreen(
             Spacer(modifier = Modifier.height(14.dp))
             BacktestSwitchRow("배당금 재투입", dividendReinvest) { dividendReinvest = it }
             BacktestSwitchRow("환율 반영", exchangeRateEnabled) { exchangeRateEnabled = it }
+            BacktestSwitchRow("롤링 백테스트", rollingBacktestEnabled) { rollingBacktestEnabled = it }
+            if (rollingBacktestEnabled) {
+                Spacer(modifier = Modifier.height(8.dp))
+                BacktestInputRow("시작 년도", rollingStartYear, "년") { rollingStartYear = it }
+                BacktestInputRow("백테스트 간격", rollingIntervalYears, "년") { rollingIntervalYears = it }
+            }
             Spacer(modifier = Modifier.height(20.dp))
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text("자산 설정", color = TextPrimary, fontSize = 20.sp, fontWeight = FontWeight.ExtraBold)
@@ -8662,6 +8760,11 @@ private fun BacktestScreen(
             BacktestReportTable(backtest.rows)
             Spacer(modifier = Modifier.height(20.dp))
             PrimaryActionButton("백테스트 저장", enabled = true) { showSaveDialog = true }
+            if (backtest.rollingResults.isNotEmpty()) {
+                Spacer(modifier = Modifier.height(24.dp))
+                SectionTitle("롤링 백테스트 결과")
+                RollingBacktestTable(backtest.rollingResults)
+            }
         }
             }
         }
@@ -8783,6 +8886,9 @@ private fun BacktestScreen(
                                     contributionAmount = preset.contributionAmount
                                     dividendReinvest = preset.dividendReinvest
                                     exchangeRateEnabled = preset.exchangeRateEnabled
+                                    rollingBacktestEnabled = preset.rollingBacktestEnabled
+                                    rollingStartYear = preset.rollingStartYear
+                                    rollingIntervalYears = preset.rollingIntervalYears
                                     assets.clear()
                                     assets.addAll(preset.assets)
                                     result = preset.result
@@ -8999,7 +9105,7 @@ private fun SelfDividendPlaceholderContent() {
                             calculateSelfDividendProjection(context, assetsSnapshot)
                         }
                         if (rows.isEmpty()) {
-                            Toast.makeText(context, "투자금과 연 인출액을 입력해 주세요.", Toast.LENGTH_SHORT).show()
+                            Toast.makeText(context, "투자금을 입력해 주세요.", Toast.LENGTH_SHORT).show()
                         } else {
                             projectionRows = rows
                             val latestPreset = SelfDividendPreset(
@@ -9202,16 +9308,22 @@ private fun FourAssetDistributionContent() {
     }
     var totalCapitalEok by remember { mutableStateOf(cachedPreset?.totalCapitalEok ?: "13") }
     var monthlyExpenseMan by remember { mutableStateOf(cachedPreset?.monthlyExpenseMan ?: "400") }
+    var schdEnabled by remember { mutableStateOf(cachedPreset?.schdEnabled ?: true) }
+    var jepqEnabled by remember { mutableStateOf(cachedPreset?.jepqEnabled ?: true) }
+    var vooEnabled by remember { mutableStateOf(cachedPreset?.vooEnabled ?: true) }
+    var qldEnabled by remember { mutableStateOf(cachedPreset?.qldEnabled ?: true) }
     var schdRatio by remember { mutableStateOf(cachedPreset?.schdRatio ?: "73.9") }
     var jepqRatio by remember { mutableStateOf(cachedPreset?.jepqRatio ?: "17.4") }
+    var vooRatio by remember { mutableStateOf(cachedPreset?.vooRatio ?: "0") }
     var qldRatio by remember { mutableStateOf(cachedPreset?.qldRatio ?: "8.7") }
     var cashRatio by remember { mutableStateOf("0") }
     var appliedAllocation by remember {
         mutableStateOf(
             FourAssetAllocation(
-                schd = cachedPreset?.appliedSchdRatio ?: 73.9,
-                jepq = cachedPreset?.appliedJepqRatio ?: 17.4,
-                qld = cachedPreset?.appliedQldRatio ?: 8.7,
+                schd = if (cachedPreset?.schdEnabled != false) cachedPreset?.appliedSchdRatio ?: 73.9 else 0.0,
+                jepq = if (cachedPreset?.jepqEnabled != false) cachedPreset?.appliedJepqRatio ?: 17.4 else 0.0,
+                voo = if (cachedPreset?.vooEnabled != false) cachedPreset?.appliedVooRatio ?: 0.0 else 0.0,
+                qld = if (cachedPreset?.qldEnabled != false) cachedPreset?.appliedQldRatio ?: 8.7 else 0.0,
                 cash = 0.0
             )
         )
@@ -9219,6 +9331,7 @@ private fun FourAssetDistributionContent() {
     var exchangeRate by remember { mutableStateOf(cachedPreset?.exchangeRate ?: "1600") }
     var schdPrice by remember { mutableStateOf(cachedPreset?.schdPrice ?: "80.0") }
     var jepqPrice by remember { mutableStateOf(cachedPreset?.jepqPrice ?: "50.0") }
+    var vooPrice by remember { mutableStateOf(cachedPreset?.vooPrice ?: "500.0") }
     var qldPrice by remember { mutableStateOf(cachedPreset?.qldPrice ?: "90.0") }
     var schdYield by remember { mutableStateOf(cachedPreset?.schdYield ?: "3.0") }
     var schdDividendGrowth by remember { mutableStateOf(cachedPreset?.schdDividendGrowth ?: "6.0") }
@@ -9226,12 +9339,16 @@ private fun FourAssetDistributionContent() {
     var jepqYield by remember { mutableStateOf(cachedPreset?.jepqYield ?: "8.0") }
     var jepqDividendGrowth by remember { mutableStateOf(cachedPreset?.jepqDividendGrowth ?: "2.0") }
     var jepqPriceGrowth by remember { mutableStateOf(cachedPreset?.jepqPriceGrowth ?: "2.0") }
+    var vooPriceGrowth by remember { mutableStateOf(cachedPreset?.vooPriceGrowth ?: "8.0") }
     var qldPriceGrowth by remember { mutableStateOf(cachedPreset?.qldPriceGrowth ?: "15.0") }
     var cashYield by remember { mutableStateOf(cachedPreset?.cashYield ?: "3.0") }
     var inflationRate by remember { mutableStateOf(cachedPreset?.inflationRate ?: "3.0") }
+    var overseasDividendTaxRate by remember {
+        mutableStateOf(cachedPreset?.overseasDividendTaxRate ?: "15")
+    }
     var taxAndInsuranceRate by remember { mutableStateOf(cachedPreset?.taxAndInsuranceRate ?: "23.4") }
     var stressTestEnabled by remember { mutableStateOf(cachedPreset?.stressTestEnabled ?: false) }
-    var historicalRates by remember { mutableStateOf<Map<String, HistoricalAnnualRates>>(emptyMap()) }
+    var historicalRates by remember { mutableStateOf<Map<String, ThreeAssetHistoricalRates>>(emptyMap()) }
     var historicalRatesLoading by remember { mutableStateOf(true) }
     var showAllocationAlert by remember { mutableStateOf(false) }
     var showSaveDialog by remember { mutableStateOf(false) }
@@ -9243,47 +9360,59 @@ private fun FourAssetDistributionContent() {
     LaunchedEffect(Unit) {
         historicalRatesLoading = true
         historicalRates = withContext(Dispatchers.IO) {
-            listOf("SCHD", "JEPQ", "QLD").mapNotNull { ticker ->
-                refreshHistoricalAnnualRates(
+            listOf("SCHD", "JEPQ", "VOO", "QLD").mapNotNull { ticker ->
+                refreshThreeAssetHistoricalRates(
                     context = context,
                     ticker = ticker,
-                    includeDividends = ticker != "QLD"
+                    includeDividends = ticker in setOf("SCHD", "JEPQ")
                 )?.let { ticker to it }
             }.toMap()
         }
         historicalRates["SCHD"]?.let { rates ->
             schdPrice = formatHistoricalRate(rates.latestPrice)
-            schdYield = formatHistoricalRate(rates.dividendYieldPercent ?: schdYield.toDoubleOrNull() ?: 0.0)
+            schdYield = formatHistoricalRate(rates.averageDividendYieldPercent ?: schdYield.toDoubleOrNull() ?: 0.0)
             schdDividendGrowth = formatHistoricalRate(rates.dividendGrowthCagrPercent ?: schdDividendGrowth.toDoubleOrNull() ?: 0.0)
-            schdPriceGrowth = formatHistoricalRate(rates.priceCagrPercent)
+            schdPriceGrowth = formatHistoricalRate(rates.priceOnlyCagrPercent)
         }
         historicalRates["JEPQ"]?.let { rates ->
             jepqPrice = formatHistoricalRate(rates.latestPrice)
-            jepqYield = formatHistoricalRate(rates.dividendYieldPercent ?: jepqYield.toDoubleOrNull() ?: 0.0)
+            jepqYield = formatHistoricalRate(rates.averageDividendYieldPercent ?: jepqYield.toDoubleOrNull() ?: 0.0)
             jepqDividendGrowth = formatHistoricalRate(rates.dividendGrowthCagrPercent ?: jepqDividendGrowth.toDoubleOrNull() ?: 0.0)
-            jepqPriceGrowth = formatHistoricalRate(rates.priceCagrPercent)
+            jepqPriceGrowth = formatHistoricalRate(rates.priceOnlyCagrPercent)
+        }
+        historicalRates["VOO"]?.let { rates ->
+            vooPrice = formatHistoricalRate(rates.latestPrice)
+            vooPriceGrowth = formatHistoricalRate(rates.priceOnlyCagrPercent)
         }
         historicalRates["QLD"]?.let { rates ->
             qldPrice = formatHistoricalRate(rates.latestPrice)
-            qldPriceGrowth = formatHistoricalRate(rates.priceCagrPercent)
+            qldPriceGrowth = formatHistoricalRate(rates.priceOnlyCagrPercent)
         }
         cashYield = "0"
         historicalRatesLoading = false
     }
 
     fun currentAllocation(): FourAssetAllocation = FourAssetAllocation(
-        schd = schdRatio.toDoubleOrNull() ?: 0.0,
-        jepq = jepqRatio.toDoubleOrNull() ?: 0.0,
-        qld = qldRatio.toDoubleOrNull() ?: 0.0,
+        schd = if (schdEnabled) schdRatio.toDoubleOrNull() ?: 0.0 else 0.0,
+        jepq = if (jepqEnabled) jepqRatio.toDoubleOrNull() ?: 0.0 else 0.0,
+        voo = if (vooEnabled) vooRatio.toDoubleOrNull() ?: 0.0 else 0.0,
+        qld = if (qldEnabled) qldRatio.toDoubleOrNull() ?: 0.0 else 0.0,
         cash = 0.0
     )
 
-    val draftAllocationTotal = currentAllocation().let { it.schd + it.jepq + it.qld }
-    val appliedAllocationTotal = appliedAllocation.schd + appliedAllocation.jepq + appliedAllocation.qld
+    val draftAllocationTotal = currentAllocation().let { it.schd + it.jepq + it.voo + it.qld }
+    val appliedAllocationTotal =
+        appliedAllocation.schd + appliedAllocation.jepq + appliedAllocation.voo + appliedAllocation.qld
+    val activeAssetLabel = listOfNotNull(
+        "SCHD".takeIf { schdEnabled },
+        "JEPQ".takeIf { jepqEnabled },
+        "VOO".takeIf { vooEnabled },
+        "QLD".takeIf { qldEnabled }
+    ).joinToString(", ")
 
     fun applyDraftAllocation() {
         val draft = currentAllocation()
-        val total = draft.schd + draft.jepq + draft.qld + draft.cash
+        val total = draft.schd + draft.jepq + draft.voo + draft.qld + draft.cash
         if (kotlin.math.abs(total - 100.0) > 0.05) {
             showAllocationAlert = true
         } else {
@@ -9291,24 +9420,72 @@ private fun FourAssetDistributionContent() {
         }
     }
 
+    fun updateAssetEnabled(ticker: String, enabled: Boolean) {
+        val enabledCount = listOf(schdEnabled, jepqEnabled, vooEnabled, qldEnabled).count { it }
+        if (!enabled && enabledCount <= 1) {
+            Toast.makeText(context, "최소 한 종목은 활성화해야 합니다.", Toast.LENGTH_SHORT).show()
+            return
+        }
+        when (ticker) {
+            "SCHD" -> schdEnabled = enabled
+            "JEPQ" -> jepqEnabled = enabled
+            "VOO" -> vooEnabled = enabled
+            "QLD" -> qldEnabled = enabled
+        }
+        val activeSchd = if (ticker == "SCHD") enabled else schdEnabled
+        val activeJepq = if (ticker == "JEPQ") enabled else jepqEnabled
+        val activeVoo = if (ticker == "VOO") enabled else vooEnabled
+        val activeQld = if (ticker == "QLD") enabled else qldEnabled
+        val filtered = FourAssetAllocation(
+            schd = if (activeSchd) appliedAllocation.schd else 0.0,
+            jepq = if (activeJepq) appliedAllocation.jepq else 0.0,
+            voo = if (activeVoo) appliedAllocation.voo else 0.0,
+            qld = if (activeQld) appliedAllocation.qld else 0.0,
+            cash = 0.0
+        )
+        val total = filtered.schd + filtered.jepq + filtered.voo + filtered.qld
+        appliedAllocation = if (total > 0.0) {
+            filtered.copy(
+                schd = filtered.schd / total * 100.0,
+                jepq = filtered.jepq / total * 100.0,
+                voo = filtered.voo / total * 100.0,
+                qld = filtered.qld / total * 100.0
+            )
+        } else {
+            when {
+                activeSchd -> filtered.copy(schd = 100.0)
+                activeJepq -> filtered.copy(jepq = 100.0)
+                activeVoo -> filtered.copy(voo = 100.0)
+                else -> filtered.copy(qld = 100.0)
+            }
+        }
+    }
+
     fun currentPreset(
-        name: String = "3ETF 분배",
+        name: String = "배당+성장",
         useAppliedRatios: Boolean = false
     ) = FourAssetDistributionPreset(
         name = name,
         totalCapitalEok = totalCapitalEok,
         monthlyExpenseMan = monthlyExpenseMan,
+        schdEnabled = schdEnabled,
+        jepqEnabled = jepqEnabled,
+        vooEnabled = vooEnabled,
+        qldEnabled = qldEnabled,
         schdRatio = if (useAppliedRatios) formatDecimal(appliedAllocation.schd) else schdRatio,
         jepqRatio = if (useAppliedRatios) formatDecimal(appliedAllocation.jepq) else jepqRatio,
+        vooRatio = if (useAppliedRatios) formatDecimal(appliedAllocation.voo) else vooRatio,
         qldRatio = if (useAppliedRatios) formatDecimal(appliedAllocation.qld) else qldRatio,
         cashRatio = "0",
-        appliedSchdRatio = appliedAllocation.schd,
-        appliedJepqRatio = appliedAllocation.jepq,
-        appliedQldRatio = appliedAllocation.qld,
+        appliedSchdRatio = if (schdEnabled) appliedAllocation.schd else 0.0,
+        appliedJepqRatio = if (jepqEnabled) appliedAllocation.jepq else 0.0,
+        appliedVooRatio = if (vooEnabled) appliedAllocation.voo else 0.0,
+        appliedQldRatio = if (qldEnabled) appliedAllocation.qld else 0.0,
         appliedCashRatio = 0.0,
         exchangeRate = exchangeRate,
         schdPrice = schdPrice,
         jepqPrice = jepqPrice,
+        vooPrice = vooPrice,
         qldPrice = qldPrice,
         schdYield = schdYield,
         schdDividendGrowth = schdDividendGrowth,
@@ -9316,9 +9493,11 @@ private fun FourAssetDistributionContent() {
         jepqYield = jepqYield,
         jepqDividendGrowth = jepqDividendGrowth,
         jepqPriceGrowth = jepqPriceGrowth,
+        vooPriceGrowth = vooPriceGrowth,
         qldPriceGrowth = qldPriceGrowth,
         cashYield = cashYield,
         inflationRate = inflationRate,
+        overseasDividendTaxRate = overseasDividendTaxRate,
         taxAndInsuranceRate = taxAndInsuranceRate,
         stressTestEnabled = stressTestEnabled
     )
@@ -9334,7 +9513,7 @@ private fun FourAssetDistributionContent() {
         saveLastFourAssetDistributionPreset(context, preset)
         presetName = ""
         showSaveDialog = false
-        Toast.makeText(context, "3ETF 분배를 저장했어요.", Toast.LENGTH_SHORT).show()
+        Toast.makeText(context, "배당+성장을 저장했어요.", Toast.LENGTH_SHORT).show()
     }
 
     fun moveSavedPreset(fromIndex: Int, toIndex: Int) {
@@ -9361,18 +9540,27 @@ private fun FourAssetDistributionContent() {
     fun loadPreset(preset: FourAssetDistributionPreset) {
         totalCapitalEok = preset.totalCapitalEok
         monthlyExpenseMan = preset.monthlyExpenseMan
+        schdEnabled = preset.schdEnabled
+        jepqEnabled = preset.jepqEnabled
+        vooEnabled = preset.vooEnabled
+        qldEnabled = preset.qldEnabled
         schdRatio = preset.schdRatio
         jepqRatio = preset.jepqRatio
+        vooRatio = preset.vooRatio
         qldRatio = preset.qldRatio
         cashRatio = "0"
         appliedAllocation = FourAssetAllocation(
             schd = preset.appliedSchdRatio,
             jepq = preset.appliedJepqRatio,
+            voo = preset.appliedVooRatio,
             qld = preset.appliedQldRatio,
             cash = 0.0
         )
         exchangeRate = preset.exchangeRate
+        vooPrice = preset.vooPrice
+        vooPriceGrowth = preset.vooPriceGrowth
         inflationRate = preset.inflationRate
+        overseasDividendTaxRate = preset.overseasDividendTaxRate
         taxAndInsuranceRate = preset.taxAndInsuranceRate
         stressTestEnabled = preset.stressTestEnabled
         lastFourAssetDistributionPresetCache = preset
@@ -9383,14 +9571,16 @@ private fun FourAssetDistributionContent() {
         totalCapitalWon = eokInputToWon(totalCapitalEok),
         monthlyExpenseWon = manInputToWon(monthlyExpenseMan),
         allocation = FourAssetAllocation(
-            schd = appliedAllocation.schd / 100.0,
-            jepq = appliedAllocation.jepq / 100.0,
-            qld = appliedAllocation.qld / 100.0,
+            schd = if (schdEnabled) appliedAllocation.schd / 100.0 else 0.0,
+            jepq = if (jepqEnabled) appliedAllocation.jepq / 100.0 else 0.0,
+            voo = if (vooEnabled) appliedAllocation.voo / 100.0 else 0.0,
+            qld = if (qldEnabled) appliedAllocation.qld / 100.0 else 0.0,
             cash = appliedAllocation.cash / 100.0
         ),
         exchangeRate = (exchangeRate.toDoubleOrNull() ?: 1600.0).coerceAtLeast(1.0),
         schdPrice = (schdPrice.toDoubleOrNull() ?: 80.0).coerceAtLeast(0.1),
         jepqPrice = (jepqPrice.toDoubleOrNull() ?: 50.0).coerceAtLeast(0.1),
+        vooPrice = (vooPrice.toDoubleOrNull() ?: 500.0).coerceAtLeast(0.1),
         qldPrice = (qldPrice.toDoubleOrNull() ?: 90.0).coerceAtLeast(0.1),
         schdYield = (schdYield.toDoubleOrNull() ?: 3.0) / 100.0,
         schdDividendGrowth = (schdDividendGrowth.toDoubleOrNull() ?: 6.0) / 100.0,
@@ -9398,9 +9588,11 @@ private fun FourAssetDistributionContent() {
         jepqYield = (jepqYield.toDoubleOrNull() ?: 8.0) / 100.0,
         jepqDividendGrowth = (jepqDividendGrowth.toDoubleOrNull() ?: 2.0) / 100.0,
         jepqPriceGrowth = (jepqPriceGrowth.toDoubleOrNull() ?: 2.0) / 100.0,
+        vooPriceGrowth = (vooPriceGrowth.toDoubleOrNull() ?: 8.0) / 100.0,
         qldPriceGrowth = (qldPriceGrowth.toDoubleOrNull() ?: 15.0) / 100.0,
         cashYield = 0.0,
         inflationRate = (inflationRate.toDoubleOrNull() ?: 3.0) / 100.0,
+        overseasDividendTaxRate = (overseasDividendTaxRate.toDoubleOrNull() ?: 15.0) / 100.0,
         taxAndInsuranceRate = (taxAndInsuranceRate.toDoubleOrNull() ?: 23.4) / 100.0,
         stressTestEnabled = stressTestEnabled
     )
@@ -9416,7 +9608,7 @@ private fun FourAssetDistributionContent() {
 
     BacktestCard {
         Row(verticalAlignment = Alignment.CenterVertically) {
-            SectionTitle("3ETF 분배 설정")
+            SectionTitle("배당+성장 설정")
             Spacer(modifier = Modifier.weight(1f))
             Text(
                 "불러오기",
@@ -9428,7 +9620,7 @@ private fun FourAssetDistributionContent() {
         }
         Spacer(modifier = Modifier.height(10.dp))
         Text(
-            "SCHD, JEPQ, QLD를 20년 동안 배당·생활비·스트레스 테스트 기준으로 시뮬레이션합니다.",
+            "활성화한 SCHD, JEPQ, VOO, QLD를 20년 동안 배당·생활비·스트레스 테스트 기준으로 시뮬레이션합니다.",
             color = TextSecondary,
             fontSize = 14.sp,
             lineHeight = 21.sp
@@ -9443,9 +9635,10 @@ private fun FourAssetDistributionContent() {
         SectionTitle("환율 및 최신 주가")
         Spacer(modifier = Modifier.height(12.dp))
         FourAssetDecimalInputRow("기준 환율", exchangeRate, "원") { exchangeRate = it }
-        FourAssetCalculatedValueRow("SCHD 최신 수정주가", schdPrice, "$")
-        FourAssetCalculatedValueRow("JEPQ 최신 수정주가", jepqPrice, "$")
-        FourAssetCalculatedValueRow("QLD 최신 수정주가", qldPrice, "$")
+        FourAssetCalculatedValueRow("SCHD 최신 종가", schdPrice, "$")
+        FourAssetCalculatedValueRow("JEPQ 최신 종가", jepqPrice, "$")
+        FourAssetCalculatedValueRow("VOO 최신 종가", vooPrice, "$")
+        FourAssetCalculatedValueRow("QLD 최신 종가", qldPrice, "$")
     }
 
     Spacer(modifier = Modifier.height(14.dp))
@@ -9461,28 +9654,53 @@ private fun FourAssetDistributionContent() {
             )
         }
         Text(
-            "수정주가는 상장 후 최신일까지, 배당률은 최근 12개월, 배당성장은 첫 비교 가능 연도부터 계산합니다.",
+            "주가성장률은 배당 제외 종가, 배당률은 상장 후 연도별 배당수익률 평균, 배당성장은 상장 후 연평균으로 계산합니다.",
             color = TextSecondary,
             fontSize = 11.sp,
             lineHeight = 17.sp
         )
         Spacer(modifier = Modifier.height(12.dp))
-        FourAssetRateGroup("SCHD", FourAssetSchdColor) {
-            FourAssetCalculatedValueRow("최근 12개월 배당률", schdYield, "%")
-            FourAssetCalculatedValueRow("상장 후 배당성장", schdDividendGrowth, "%")
-            FourAssetCalculatedValueRow("상장 후 주가성장", schdPriceGrowth, "%")
+        FourAssetRateGroup(
+            label = "SCHD",
+            color = FourAssetSchdColor,
+            enabled = schdEnabled,
+            onEnabledChange = { updateAssetEnabled("SCHD", it) }
+        ) {
+            FourAssetCalculatedValueRow("상장 후 평균 배당률", schdYield, "%")
+            FourAssetCalculatedValueRow("상장 후 평균 배당성장률", schdDividendGrowth, "%")
+            FourAssetCalculatedValueRow("상장 후 평균 주가성장률", schdPriceGrowth, "%")
             FourAssetHistoricalPeriod(historicalRates["SCHD"])
         }
         Spacer(modifier = Modifier.height(10.dp))
-        FourAssetRateGroup("JEPQ", FourAssetJepqColor) {
-            FourAssetCalculatedValueRow("최근 12개월 배당률", jepqYield, "%")
-            FourAssetCalculatedValueRow("상장 후 배당성장", jepqDividendGrowth, "%")
-            FourAssetCalculatedValueRow("상장 후 주가성장", jepqPriceGrowth, "%")
+        FourAssetRateGroup(
+            label = "JEPQ",
+            color = FourAssetJepqColor,
+            enabled = jepqEnabled,
+            onEnabledChange = { updateAssetEnabled("JEPQ", it) }
+        ) {
+            FourAssetCalculatedValueRow("상장 후 평균 배당률", jepqYield, "%")
+            FourAssetCalculatedValueRow("상장 후 평균 배당성장률", jepqDividendGrowth, "%")
+            FourAssetCalculatedValueRow("상장 후 평균 주가성장률", jepqPriceGrowth, "%")
             FourAssetHistoricalPeriod(historicalRates["JEPQ"])
         }
         Spacer(modifier = Modifier.height(10.dp))
-        FourAssetRateGroup("QLD", FourAssetQldColor) {
-            FourAssetCalculatedValueRow("상장 후 주가성장", qldPriceGrowth, "%")
+        FourAssetRateGroup(
+            label = "VOO",
+            color = FourAssetVooColor,
+            enabled = vooEnabled,
+            onEnabledChange = { updateAssetEnabled("VOO", it) }
+        ) {
+            FourAssetCalculatedValueRow("상장 후 평균 주가성장률", vooPriceGrowth, "%")
+            FourAssetHistoricalPeriod(historicalRates["VOO"])
+        }
+        Spacer(modifier = Modifier.height(10.dp))
+        FourAssetRateGroup(
+            label = "QLD",
+            color = FourAssetQldColor,
+            enabled = qldEnabled,
+            onEnabledChange = { updateAssetEnabled("QLD", it) }
+        ) {
+            FourAssetCalculatedValueRow("상장 후 평균 주가성장률", qldPriceGrowth, "%")
             FourAssetHistoricalPeriod(historicalRates["QLD"])
         }
     }
@@ -9502,14 +9720,25 @@ private fun FourAssetDistributionContent() {
             lineHeight = 18.sp
         )
         Spacer(modifier = Modifier.height(12.dp))
-        FourAssetAllocationInputRow("SCHD", "성장배당", FourAssetSchdColor, schdRatio, input.totalCapitalWon) {
-            schdRatio = it
+        if (schdEnabled) {
+            FourAssetAllocationInputRow("SCHD", "성장배당", FourAssetSchdColor, schdRatio, input.totalCapitalWon) {
+                schdRatio = it
+            }
         }
-        FourAssetAllocationInputRow("JEPQ", "고배당", FourAssetJepqColor, jepqRatio, input.totalCapitalWon) {
-            jepqRatio = it
+        if (jepqEnabled) {
+            FourAssetAllocationInputRow("JEPQ", "고배당", FourAssetJepqColor, jepqRatio, input.totalCapitalWon) {
+                jepqRatio = it
+            }
         }
-        FourAssetAllocationInputRow("QLD", "나스닥 2배", FourAssetQldColor, qldRatio, input.totalCapitalWon) {
-            qldRatio = it
+        if (vooEnabled) {
+            FourAssetAllocationInputRow("VOO", "S&P 500", FourAssetVooColor, vooRatio, input.totalCapitalWon) {
+                vooRatio = it
+            }
+        }
+        if (qldEnabled) {
+            FourAssetAllocationInputRow("QLD", "나스닥 2배", FourAssetQldColor, qldRatio, input.totalCapitalWon) {
+                qldRatio = it
+            }
         }
         Spacer(modifier = Modifier.height(12.dp))
         PrimaryActionButton("배분 비율 반영", enabled = true) {
@@ -9522,11 +9751,20 @@ private fun FourAssetDistributionContent() {
         SectionTitle("환경 변수")
         Spacer(modifier = Modifier.height(12.dp))
         FourAssetDecimalInputRow("물가상승률", inflationRate, "%") { inflationRate = it }
-        FourAssetDecimalInputRow("세금/건보료", taxAndInsuranceRate, "%") { taxAndInsuranceRate = it }
+        FourAssetDecimalInputRow("해외 배당소득세", overseasDividendTaxRate, "%") {
+            overseasDividendTaxRate = it
+        }
+        FourAssetDecimalInputRow("종소세/건보료", taxAndInsuranceRate, "%") { taxAndInsuranceRate = it }
+        Text(
+            "두 비율을 합산해 세전 배당금에서 차감합니다.",
+            color = TextSecondary,
+            fontSize = 11.sp,
+            lineHeight = 16.sp
+        )
         Spacer(modifier = Modifier.height(6.dp))
         BacktestSwitchRow("하락장 스트레스 테스트", stressTestEnabled) { stressTestEnabled = it }
         Text(
-            "1년차 SCHD/JEPQ -30%, QLD -60%, 2~3년차 정체, JEPQ 배당 20% 삭감을 반영합니다.",
+            "1년차 SCHD/JEPQ/VOO -30%, QLD -60%, 2~3년차 정체, JEPQ 배당 20% 삭감을 반영합니다.",
             color = TextSecondary,
             fontSize = 12.sp,
             lineHeight = 18.sp
@@ -9542,7 +9780,7 @@ private fun FourAssetDistributionContent() {
         FourAssetResultContent(result)
     }
     Spacer(modifier = Modifier.height(14.dp))
-    PrimaryActionButton("3ETF 분배 저장", enabled = !historicalRatesLoading) {
+    PrimaryActionButton("배당+성장 저장", enabled = !historicalRatesLoading) {
         showSaveDialog = true
     }
 
@@ -9553,7 +9791,7 @@ private fun FourAssetDistributionContent() {
             title = { Text("배분 비율을 확인해 주세요", color = TextPrimary, fontWeight = FontWeight.ExtraBold) },
             text = {
                 Text(
-                    "SCHD, JEPQ, QLD 비율 합계가 100%가 되어야 결과에 반영할 수 있습니다. 현재 합계는 ${String.format(Locale.US, "%.1f%%", draftAllocationTotal)}입니다.",
+                    "$activeAssetLabel 비율 합계가 100%가 되어야 결과에 반영할 수 있습니다. 현재 합계는 ${String.format(Locale.US, "%.1f%%", draftAllocationTotal)}입니다.",
                     color = TextSecondary,
                     lineHeight = 21.sp
                 )
@@ -9568,7 +9806,7 @@ private fun FourAssetDistributionContent() {
 
     if (showSaveDialog) {
         SimulationPresetSaveDialog(
-            title = "3ETF 분배 저장",
+            title = "배당+성장 저장",
             name = presetName,
             existingNames = savedPresets.map { it.name },
             onNameChange = { presetName = it },
@@ -9582,7 +9820,7 @@ private fun FourAssetDistributionContent() {
         AlertDialog(
             onDismissRequest = { showLoadDialog = false },
             containerColor = PanelColor,
-            title = { Text("3ETF 분배 불러오기", color = TextPrimary, fontWeight = FontWeight.ExtraBold) },
+            title = { Text("배당+성장 불러오기", color = TextPrimary, fontWeight = FontWeight.ExtraBold) },
             text = {
                 Column(
                     modifier = Modifier
@@ -9591,7 +9829,7 @@ private fun FourAssetDistributionContent() {
                         .verticalScroll(rememberScrollState())
                 ) {
                     if (savedPresets.isEmpty()) {
-                        Text("저장된 3ETF 분배가 없습니다.", color = TextSecondary)
+                        Text("저장된 배당+성장이 없습니다.", color = TextSecondary)
                     } else {
                         savedPresets.forEachIndexed { index, preset ->
                             Row(
@@ -9620,7 +9858,7 @@ private fun FourAssetDistributionContent() {
                                         overflow = TextOverflow.Ellipsis
                                     )
                                     Text(
-                                        "SCHD ${preset.appliedSchdRatio.formatOneDecimal()}% · JEPQ ${preset.appliedJepqRatio.formatOneDecimal()}% · QLD ${preset.appliedQldRatio.formatOneDecimal()}%",
+                                        "SCHD ${preset.appliedSchdRatio.formatOneDecimal()}% · JEPQ ${preset.appliedJepqRatio.formatOneDecimal()}% · VOO ${preset.appliedVooRatio.formatOneDecimal()}% · QLD ${preset.appliedQldRatio.formatOneDecimal()}%",
                                         color = TextSecondary,
                                         fontSize = 11.sp,
                                         fontWeight = FontWeight.Bold,
@@ -9662,7 +9900,7 @@ private fun FourAssetDistributionContent() {
         AlertDialog(
             onDismissRequest = { deletePreset = null },
             containerColor = PanelColor,
-            title = { Text("3ETF 분배를 삭제할까요?", color = TextPrimary, fontWeight = FontWeight.ExtraBold) },
+            title = { Text("배당+성장을 삭제할까요?", color = TextPrimary, fontWeight = FontWeight.ExtraBold) },
             text = { Text("${preset.name} 항목을 삭제합니다.", color = TextSecondary) },
             confirmButton = {
                 TextButton(onClick = {
@@ -9682,13 +9920,17 @@ private fun FourAssetDistributionContent() {
 @Composable
 private fun FourAssetResultContent(result: FourAssetRetirementResult) {
     BacktestCard {
-        SectionTitle("3ETF 분배 결과")
+        SectionTitle("배당+성장 결과")
         Spacer(modifier = Modifier.height(12.dp))
         SelfDividendSummaryBox("20년 뒤 최종 자산", formatWon(result.finalAssetWon), modifier = Modifier.fillMaxWidth())
         Spacer(modifier = Modifier.height(14.dp))
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
             FourAssetShareBox("SCHD", result.initialSchdShares, modifier = Modifier.weight(1f))
             FourAssetShareBox("JEPQ", result.initialJepqShares, modifier = Modifier.weight(1f))
+        }
+        Spacer(modifier = Modifier.height(8.dp))
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+            FourAssetShareBox("VOO", result.initialVooShares, modifier = Modifier.weight(1f))
             FourAssetShareBox("QLD", result.initialQldShares, modifier = Modifier.weight(1f))
         }
         Spacer(modifier = Modifier.height(16.dp))
@@ -9727,9 +9969,12 @@ private fun FourAssetStackedChart(rows: List<FourAssetAnnualRow>) {
             Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
                 FourAssetLegend("SCHD", FourAssetSchdColor)
                 FourAssetLegend("JEPQ", FourAssetJepqColor)
-                FourAssetLegend("QLD", FourAssetQldColor)
+                FourAssetLegend("VOO", FourAssetVooColor)
             }
-            FourAssetLegend("현금", FourAssetCashColor)
+            Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
+                FourAssetLegend("QLD", FourAssetQldColor)
+                FourAssetLegend("현금", FourAssetCashColor)
+            }
         }
         Spacer(modifier = Modifier.height(8.dp))
         Canvas(
@@ -9789,6 +10034,7 @@ private fun FourAssetStackedChart(rows: List<FourAssetAnnualRow>) {
                 }
                 drawSegment(row.cashWon, FourAssetCashColor)
                 drawSegment(row.qldAssetWon, FourAssetQldColor)
+                drawSegment(row.vooAssetWon, FourAssetVooColor)
                 drawSegment(row.jepqAssetWon, FourAssetJepqColor)
                 drawSegment(row.schdAssetWon, FourAssetSchdColor)
 
@@ -9829,6 +10075,7 @@ private fun FourAssetSelectedBreakdown(row: FourAssetAnnualRow, modifier: Modifi
         Spacer(modifier = Modifier.height(9.dp))
         FourAssetBreakdownLine("SCHD", FourAssetSchdColor, row.schdAssetWon, row.totalAssetWon)
         FourAssetBreakdownLine("JEPQ", FourAssetJepqColor, row.jepqAssetWon, row.totalAssetWon)
+        FourAssetBreakdownLine("VOO", FourAssetVooColor, row.vooAssetWon, row.totalAssetWon)
         FourAssetBreakdownLine("QLD", FourAssetQldColor, row.qldAssetWon, row.totalAssetWon)
         FourAssetBreakdownLine("현금", FourAssetCashColor, row.cashWon, row.totalAssetWon)
         Spacer(modifier = Modifier.height(7.dp))
@@ -9865,7 +10112,7 @@ private fun FourAssetReportTable(rows: List<FourAssetAnnualRow>) {
                     Text(formatManWon(row.annualExpenseWon), color = PositiveRed, fontSize = 12.sp, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f), textAlign = TextAlign.End)
                 }
                 Text(
-                    "SCHD ${formatEokWon(row.schdAssetWon)} / JEPQ ${formatEokWon(row.jepqAssetWon)} / QLD ${formatEokWon(row.qldAssetWon)} / 현금 ${formatEokWon(row.cashWon)}",
+                    "SCHD ${formatEokWon(row.schdAssetWon)} / JEPQ ${formatEokWon(row.jepqAssetWon)} / VOO ${formatEokWon(row.vooAssetWon)} / QLD ${formatEokWon(row.qldAssetWon)} / 현금 ${formatEokWon(row.cashWon)}",
                     color = TextSecondary,
                     fontSize = 11.sp,
                     modifier = Modifier.padding(start = 44.dp, top = 3.dp)
@@ -9904,17 +10151,43 @@ private fun FourAssetLegend(label: String, color: Color) {
 }
 
 @Composable
-private fun FourAssetRateGroup(label: String, color: Color, content: @Composable ColumnScope.() -> Unit) {
+private fun FourAssetRateGroup(
+    label: String,
+    color: Color,
+    enabled: Boolean,
+    onEnabledChange: (Boolean) -> Unit,
+    content: @Composable ColumnScope.() -> Unit
+) {
     Column(
         modifier = Modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(16.dp))
-            .background(color.copy(alpha = 0.10f))
+            .background(color.copy(alpha = if (enabled) 0.10f else 0.04f))
             .padding(12.dp)
     ) {
-        Text(label, color = color, fontSize = 13.sp, fontWeight = FontWeight.ExtraBold)
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                label,
+                color = if (enabled) color else MutedText,
+                fontSize = 13.sp,
+                fontWeight = FontWeight.ExtraBold
+            )
+            Spacer(modifier = Modifier.weight(1f))
+            Switch(
+                checked = enabled,
+                onCheckedChange = onEnabledChange,
+                colors = SwitchDefaults.colors(
+                    checkedThumbColor = PanelColor,
+                    checkedTrackColor = color,
+                    uncheckedThumbColor = TextSecondary,
+                    uncheckedTrackColor = SoftSurface
+                )
+            )
+        }
         Spacer(modifier = Modifier.height(6.dp))
-        content()
+        CompositionLocalProvider(LocalContentColor provides if (enabled) TextPrimary else MutedText) {
+            content()
+        }
     }
 }
 
@@ -9989,9 +10262,9 @@ private fun FourAssetCalculatedValueRow(label: String, value: String, suffix: St
 }
 
 @Composable
-private fun FourAssetHistoricalPeriod(rates: HistoricalAnnualRates?) {
+private fun FourAssetHistoricalPeriod(rates: ThreeAssetHistoricalRates?) {
     Text(
-        rates?.let { "수정주가 ${it.priceStartDate}~${it.priceEndDate}" } ?: "과거 가격 데이터 부족",
+        rates?.let { "배당 제외 종가 ${it.priceStartDate}~${it.priceEndDate}" } ?: "과거 가격 데이터 부족",
         color = TextSecondary,
         fontSize = 10.sp,
         fontWeight = FontWeight.Bold,
@@ -10023,31 +10296,36 @@ private fun fourAssetRetirementInput(
     preset: FourAssetDistributionPreset,
     context: Context? = null
 ): FourAssetRetirementInput {
-    val schdRates = context?.let { historicalAnnualRates(it, "SCHD") }
-    val jepqRates = context?.let { historicalAnnualRates(it, "JEPQ") }
-    val qldRates = context?.let { historicalAnnualRates(it, "QLD") }
+    val schdRates = context?.let { threeAssetHistoricalRates(it, "SCHD") }
+    val jepqRates = context?.let { threeAssetHistoricalRates(it, "JEPQ") }
+    val vooRates = context?.let { threeAssetHistoricalRates(it, "VOO") }
+    val qldRates = context?.let { threeAssetHistoricalRates(it, "QLD") }
     return FourAssetRetirementInput(
         totalCapitalWon = eokInputToWon(preset.totalCapitalEok),
         monthlyExpenseWon = manInputToWon(preset.monthlyExpenseMan),
         allocation = FourAssetAllocation(
-            schd = preset.appliedSchdRatio / 100.0,
-            jepq = preset.appliedJepqRatio / 100.0,
-            qld = preset.appliedQldRatio / 100.0,
+            schd = if (preset.schdEnabled) preset.appliedSchdRatio / 100.0 else 0.0,
+            jepq = if (preset.jepqEnabled) preset.appliedJepqRatio / 100.0 else 0.0,
+            voo = if (preset.vooEnabled) preset.appliedVooRatio / 100.0 else 0.0,
+            qld = if (preset.qldEnabled) preset.appliedQldRatio / 100.0 else 0.0,
             cash = 0.0
         ),
         exchangeRate = (preset.exchangeRate.toDoubleOrNull() ?: 1600.0).coerceAtLeast(1.0),
         schdPrice = (schdRates?.latestPrice ?: preset.schdPrice.toDoubleOrNull() ?: 80.0).coerceAtLeast(0.1),
         jepqPrice = (jepqRates?.latestPrice ?: preset.jepqPrice.toDoubleOrNull() ?: 50.0).coerceAtLeast(0.1),
+        vooPrice = (vooRates?.latestPrice ?: preset.vooPrice.toDoubleOrNull() ?: 500.0).coerceAtLeast(0.1),
         qldPrice = (qldRates?.latestPrice ?: preset.qldPrice.toDoubleOrNull() ?: 90.0).coerceAtLeast(0.1),
-        schdYield = (schdRates?.dividendYieldPercent ?: preset.schdYield.toDoubleOrNull() ?: 3.0) / 100.0,
+        schdYield = (schdRates?.averageDividendYieldPercent ?: preset.schdYield.toDoubleOrNull() ?: 3.0) / 100.0,
         schdDividendGrowth = (schdRates?.dividendGrowthCagrPercent ?: preset.schdDividendGrowth.toDoubleOrNull() ?: 6.0) / 100.0,
-        schdPriceGrowth = (schdRates?.priceCagrPercent ?: preset.schdPriceGrowth.toDoubleOrNull() ?: 5.0) / 100.0,
-        jepqYield = (jepqRates?.dividendYieldPercent ?: preset.jepqYield.toDoubleOrNull() ?: 8.0) / 100.0,
+        schdPriceGrowth = (schdRates?.priceOnlyCagrPercent ?: preset.schdPriceGrowth.toDoubleOrNull() ?: 5.0) / 100.0,
+        jepqYield = (jepqRates?.averageDividendYieldPercent ?: preset.jepqYield.toDoubleOrNull() ?: 8.0) / 100.0,
         jepqDividendGrowth = (jepqRates?.dividendGrowthCagrPercent ?: preset.jepqDividendGrowth.toDoubleOrNull() ?: 2.0) / 100.0,
-        jepqPriceGrowth = (jepqRates?.priceCagrPercent ?: preset.jepqPriceGrowth.toDoubleOrNull() ?: 2.0) / 100.0,
-        qldPriceGrowth = (qldRates?.priceCagrPercent ?: preset.qldPriceGrowth.toDoubleOrNull() ?: 15.0) / 100.0,
+        jepqPriceGrowth = (jepqRates?.priceOnlyCagrPercent ?: preset.jepqPriceGrowth.toDoubleOrNull() ?: 2.0) / 100.0,
+        vooPriceGrowth = (vooRates?.priceOnlyCagrPercent ?: preset.vooPriceGrowth.toDoubleOrNull() ?: 8.0) / 100.0,
+        qldPriceGrowth = (qldRates?.priceOnlyCagrPercent ?: preset.qldPriceGrowth.toDoubleOrNull() ?: 15.0) / 100.0,
         cashYield = 0.0,
         inflationRate = (preset.inflationRate.toDoubleOrNull() ?: 3.0) / 100.0,
+        overseasDividendTaxRate = (preset.overseasDividendTaxRate.toDoubleOrNull() ?: 15.0) / 100.0,
         taxAndInsuranceRate = (preset.taxAndInsuranceRate.toDoubleOrNull() ?: 23.4) / 100.0,
         stressTestEnabled = preset.stressTestEnabled
     )
@@ -10318,7 +10596,7 @@ private fun calculateSelfDividendProjection(context: Context, assets: List<SelfD
     val inputs = assets.mapNotNull { asset ->
         val investment = digitsToLong(asset.investmentAmount)
         val withdrawal = digitsToLong(asset.annualWithdrawal)
-        if (investment <= 0L || withdrawal <= 0L) {
+        if (investment <= 0L) {
             null
         } else {
             val downloadedReturn = selfDividendDownloadedAnnualReturn(context, asset.ticker)
@@ -11007,6 +11285,218 @@ private fun BacktestReportTable(rows: List<BacktestReportRow>) {
     }
 }
 
+@Composable
+private fun RollingBacktestTable(rows: List<RollingBacktestSummary>) {
+    val tableWidth = 720.dp
+    val historicalRowCount = rows.count { it.usedHistoricalData }
+    BacktestCard {
+        Text(
+            "시작 연도를 1년씩 이동한 동일 기간 결과입니다.",
+            color = TextSecondary,
+            fontSize = 13.sp,
+            lineHeight = 19.sp
+        )
+        Spacer(modifier = Modifier.height(4.dp))
+        Text(
+            "현재가치는 총 평가금을 투자기간의 누적 한국 소비자물가 상승률로 나눈 실질 금액입니다. 최신 공표 이후는 최근 5개년 평균 물가상승률을 적용합니다.",
+            color = TextSecondary,
+            fontSize = 12.sp,
+            lineHeight = 18.sp
+        )
+        if (historicalRowCount < rows.size) {
+            Spacer(modifier = Modifier.height(4.dp))
+            Text(
+                "가격 데이터가 부족한 ${rows.size - historicalRowCount}개 구간은 기존 백테스트의 샘플 경로로 계산했습니다.",
+                color = CashOrange,
+                fontSize = 12.sp,
+                lineHeight = 18.sp
+            )
+        }
+        Spacer(modifier = Modifier.height(14.dp))
+        Column(modifier = Modifier.horizontalScroll(rememberScrollState())) {
+            Row(
+                modifier = Modifier.width(tableWidth),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                RollingBacktestCell("기간", 110.dp, header = true)
+                RollingBacktestCell("연평균 수익률", 130.dp, header = true)
+                RollingBacktestCell("최대 낙폭", 110.dp, header = true)
+                RollingBacktestCell("총 평가금", 170.dp, header = true)
+                RollingBacktestCell("물가반영 현재가치", 200.dp, header = true)
+            }
+            Spacer(
+                modifier = Modifier
+                    .width(tableWidth)
+                    .padding(top = 10.dp)
+                    .height(1.dp)
+                    .background(LineColor)
+            )
+            rows.forEach { row ->
+                Row(
+                    modifier = Modifier
+                        .width(tableWidth)
+                        .padding(vertical = 10.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    RollingBacktestCell("${row.startYear}~${row.endYear}", 110.dp)
+                    RollingBacktestCell(
+                        formatPercent(row.annualizedReturnPercent / 100.0),
+                        130.dp,
+                        color = if (row.annualizedReturnPercent < 0.0) NegativeBlue else PositiveRed,
+                        emphasized = true
+                    )
+                    RollingBacktestCell(
+                        formatPercent(row.maxDrawdownPercent / 100.0),
+                        110.dp,
+                        color = NegativeBlue
+                    )
+                    RollingBacktestCell(formatWon(row.finalAssetWon), 170.dp, emphasized = true)
+                    RollingBacktestCell(
+                        formatWon(row.inflationAdjustedFinalAssetWon),
+                        200.dp,
+                        emphasized = true
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun RollingBacktestCell(
+    text: String,
+    width: androidx.compose.ui.unit.Dp,
+    header: Boolean = false,
+    color: Color = if (header) TextSecondary else TextPrimary,
+    emphasized: Boolean = false
+) {
+    Text(
+        text = text,
+        color = color,
+        fontSize = if (header) 12.sp else 13.sp,
+        fontWeight = if (header || emphasized) FontWeight.Bold else FontWeight.Normal,
+        textAlign = TextAlign.Center,
+        maxLines = 1,
+        overflow = TextOverflow.Ellipsis,
+        modifier = Modifier.width(width)
+    )
+}
+
+private suspend fun calculateRollingBacktestResults(
+    context: Context,
+    settings: AppSettings,
+    rollingStartYear: Int,
+    intervalYears: Int,
+    currentYear: Int,
+    startingMoney: Long,
+    contributionEnabled: Boolean,
+    contributionPeriod: String,
+    contributionAmount: Long,
+    dividendReinvest: Boolean,
+    exchangeRateEnabled: Boolean,
+    rebalanceEnabled: Boolean,
+    rebalanceFrequency: String,
+    assets: List<BacktestAssetUi>
+): List<RollingBacktestSummary> {
+    val annualInflationRates = loadKoreanAnnualInflationRates(context, currentYear)
+    return RollingBacktestEngine.windows(
+        startYear = rollingStartYear,
+        intervalYears = intervalYears,
+        currentYear = currentYear
+    ).map { window ->
+        val result = calculateBacktestResult(
+            context = context,
+            settings = settings,
+            startYear = window.startYear,
+            endYear = window.endYear,
+            startingMoney = startingMoney,
+            contributionEnabled = contributionEnabled,
+            contributionPeriod = contributionPeriod,
+            contributionAmount = contributionAmount,
+            dividendReinvest = dividendReinvest,
+            exchangeRateEnabled = exchangeRateEnabled,
+            rebalanceEnabled = rebalanceEnabled,
+            rebalanceFrequency = rebalanceFrequency,
+            assets = assets
+        )
+        RollingBacktestEngine.summarize(
+            window = window,
+            monthlyReturns = result.monthlyReturns,
+            monthlyDrawdowns = result.monthlyDrawdowns,
+            finalAssetWon = result.monthlyAssets.lastOrNull() ?: startingMoney,
+            annualInflationRatesPercent = annualInflationRates,
+            usedHistoricalData = result.usedHistoricalData
+        )
+    }
+}
+
+private suspend fun loadKoreanAnnualInflationRates(
+    context: Context,
+    currentYear: Int
+): Map<Int, Double> = withContext(Dispatchers.IO) {
+    val preferences = context.getSharedPreferences(SimulationPreferenceName, Context.MODE_PRIVATE)
+    val cachedRates = parseAnnualInflationRates(
+        preferences.getString(KoreanInflationRatesCacheKey, null)
+    )
+    val cachedAt = preferences.getLong(KoreanInflationRatesCachedAtKey, 0L)
+    val cacheIsFresh = cachedAt > 0L &&
+        System.currentTimeMillis() - cachedAt < KoreanInflationCacheDurationMs
+    if (cacheIsFresh) {
+        return@withContext KoreanAnnualInflationFallbackPercent + cachedRates
+    }
+
+    val fetchedRates = runCatching {
+        val response = getJson(
+            "https://api.worldbank.org/v2/country/KOR/indicator/FP.CPI.TOTL.ZG" +
+                "?date=1960:$currentYear&format=json&per_page=100",
+            emptyMap()
+        )
+        val root = JSONArray(response)
+        val observations = root.optJSONArray(1) ?: JSONArray()
+        buildMap {
+            for (index in 0 until observations.length()) {
+                val observation = observations.optJSONObject(index) ?: continue
+                val year = observation.optString("date").toIntOrNull() ?: continue
+                val value = if (observation.isNull("value")) {
+                    null
+                } else {
+                    observation.optDouble("value").takeIf { it.isFinite() }
+                }
+                if (value != null) put(year, value)
+            }
+        }
+    }.getOrDefault(emptyMap())
+
+    preferences.edit().apply {
+        if (fetchedRates.isNotEmpty()) {
+            putString(KoreanInflationRatesCacheKey, annualInflationRatesToJson(fetchedRates).toString())
+        }
+        putLong(KoreanInflationRatesCachedAtKey, System.currentTimeMillis())
+        apply()
+    }
+    KoreanAnnualInflationFallbackPercent + cachedRates + fetchedRates
+}
+
+private fun parseAnnualInflationRates(raw: String?): Map<Int, Double> {
+    if (raw.isNullOrBlank()) return emptyMap()
+    return runCatching {
+        val json = JSONObject(raw)
+        buildMap {
+            val keys = json.keys()
+            while (keys.hasNext()) {
+                val key = keys.next()
+                val year = key.toIntOrNull() ?: continue
+                val value = json.optDouble(key).takeIf { it.isFinite() } ?: continue
+                put(year, value)
+            }
+        }
+    }.getOrDefault(emptyMap())
+}
+
+private fun annualInflationRatesToJson(rates: Map<Int, Double>): JSONObject = JSONObject().apply {
+    rates.forEach { (year, rate) -> put(year.toString(), rate) }
+}
+
 private suspend fun calculateBacktestResult(
     context: Context,
     settings: AppSettings,
@@ -11082,6 +11572,12 @@ private fun calculateCachedBacktestResult(
         .orEmpty()
         .sorted()
     if (commonMonths.size < 2) return null
+    if (
+        commonMonths.first().take(4).toIntOrNull() != startYear ||
+        commonMonths.last().take(4).toIntOrNull() != endYear
+    ) {
+        return null
+    }
     val fixedUsdKrw = commonMonths
         .firstOrNull()
         ?.let { fxByMonth[it] }
@@ -13854,6 +14350,47 @@ private fun saveVolatilityHistoricalSeries(context: Context, symbol: String, poi
         .apply()
 }
 
+private fun loadThreeAssetPriceOnlySeries(context: Context, symbol: String): List<HistoricalPoint> {
+    val key = symbol.trim().uppercase(Locale.US)
+    val raw = context.getSharedPreferences(ThreeAssetPriceHistoryPreferences, Context.MODE_PRIVATE)
+        .getString(key, null)
+        ?: return emptyList()
+    return runCatching {
+        val array = JSONArray(raw)
+        (0 until array.length()).mapNotNull { index ->
+            val item = array.optJSONObject(index) ?: return@mapNotNull null
+            HistoricalPoint(item.optString("date"), item.optDouble("close"))
+                .takeIf { it.date.isNotBlank() && it.close > 0.0 }
+        }.sortedBy { it.date }
+    }.getOrDefault(emptyList())
+}
+
+private fun saveThreeAssetPriceOnlySeries(
+    context: Context,
+    symbol: String,
+    points: List<HistoricalPoint>
+) {
+    val key = symbol.trim().uppercase(Locale.US)
+    val array = JSONArray()
+    points.filter { it.date.isNotBlank() && it.close > 0.0 }
+        .distinctBy { it.date }
+        .sortedBy { it.date }
+        .forEach { point ->
+            array.put(JSONObject().apply {
+                put("date", point.date)
+                put("close", point.close)
+            })
+        }
+    context.getSharedPreferences(ThreeAssetPriceHistoryPreferences, Context.MODE_PRIVATE)
+        .edit()
+        .putString(key, array.toString())
+        .apply()
+    context.getSharedPreferences(ThreeAssetPriceHistoryMetaPreferences, Context.MODE_PRIVATE)
+        .edit()
+        .putLong(key, System.currentTimeMillis())
+        .apply()
+}
+
 private suspend fun loadHistoricalVolatility(
     context: Context,
     candidate: ScenarioComparisonCandidate
@@ -13902,6 +14439,48 @@ private fun historicalAnnualRates(context: Context, ticker: String): HistoricalA
         HistoricalDividendPoint(date, point.amount)
     }
     return HistoricalRateEngine.calculate(prices, dividends)
+}
+
+private fun threeAssetHistoricalRates(context: Context, ticker: String): ThreeAssetHistoricalRates? {
+    val prices = loadThreeAssetPriceOnlySeries(context, ticker).mapNotNull { point ->
+        val date = runCatching { LocalDate.parse(point.date) }.getOrNull() ?: return@mapNotNull null
+        HistoricalClosePoint(date, point.close)
+    }
+    val dividends = loadDividendPaymentSeries(context, ticker).mapNotNull { point ->
+        val date = runCatching { LocalDate.parse(point.date) }.getOrNull() ?: return@mapNotNull null
+        HistoricalDividendPoint(date, point.amount)
+    }
+    return ThreeAssetHistoricalRateEngine.calculate(prices, dividends)
+}
+
+private suspend fun refreshThreeAssetHistoricalRates(
+    context: Context,
+    ticker: String,
+    includeDividends: Boolean
+): ThreeAssetHistoricalRates? {
+    val key = ticker.trim().uppercase(Locale.US)
+    val cachedPrices = loadThreeAssetPriceOnlySeries(context, key)
+    val cachedAt = context.getSharedPreferences(ThreeAssetPriceHistoryMetaPreferences, Context.MODE_PRIVATE)
+        .getLong(key, 0L)
+    val cacheIsFresh = cachedPrices.size >= 13 &&
+        System.currentTimeMillis() - cachedAt < VolatilityHistoryCacheMs
+
+    if (!cacheIsFresh) {
+        val downloadedPrices = runCatching {
+            downloadYahooPriceOnlyHistoricalSeries(key)
+        }.getOrDefault(emptyList())
+        if (downloadedPrices.size >= 2) {
+            saveThreeAssetPriceOnlySeries(context, key, downloadedPrices)
+        }
+    }
+    if (includeDividends && (!cacheIsFresh || loadDividendPaymentSeries(context, key).isEmpty())) {
+        val downloadedDividends = runCatching { downloadYahooDividendSeries(key) }
+            .getOrDefault(emptyList())
+        if (downloadedDividends.isNotEmpty()) {
+            mergeDividendPaymentSeries(context, key, downloadedDividends)
+        }
+    }
+    return threeAssetHistoricalRates(context, key)
 }
 
 private suspend fun refreshHistoricalAnnualRates(
@@ -14132,6 +14711,26 @@ private suspend fun downloadYahooHistoricalSeries(symbol: String, interval: Stri
     return emptyList()
 }
 
+private suspend fun downloadYahooPriceOnlyHistoricalSeries(symbol: String): List<HistoricalPoint> {
+    val endEpoch = Instant.now().epochSecond
+    yahooHistorySymbols(symbol).forEach { yahooSymbol ->
+        val json = runCatching {
+            getJson(
+                url = "https://query1.finance.yahoo.com/v8/finance/chart/$yahooSymbol" +
+                    "?period1=0&period2=$endEpoch&interval=1mo&events=history&includeAdjustedClose=true",
+                headers = mapOf(
+                    "User-Agent" to "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 Chrome/126.0 Mobile Safari/537.36",
+                    "Accept" to "application/json"
+                )
+            )
+        }.getOrNull()
+        val points = json?.let { parseYahooPriceOnlyChartPoints(it) }.orEmpty()
+        if (points.size >= 2) return points
+        delay(250L)
+    }
+    return emptyList()
+}
+
 private suspend fun downloadAndStoreDividendPaymentSeries(context: Context, symbol: String): List<DividendPaymentPoint> {
     if (symbol == "USDKRW" || isKoreanTicker(symbol)) return emptyList()
     val payments = downloadYahooDividendSeries(symbol)
@@ -14205,6 +14804,35 @@ private fun parseYahooChartPoints(json: String): List<HistoricalPoint> {
         ?.optJSONObject(0)
         ?.optJSONArray("adjclose")
         ?: indicators.optJSONArray("quote")?.optJSONObject(0)?.optJSONArray("close")
+        ?: return emptyList()
+    val points = mutableListOf<HistoricalPoint>()
+    val zone = ZoneId.of("UTC")
+    val size = minOf(timestamps.length(), closeArray.length())
+    for (index in 0 until size) {
+        if (closeArray.isNull(index)) continue
+        val close = closeArray.optDouble(index, Double.NaN)
+        if (!close.isFinite() || close <= 0.0) continue
+        val date = Instant.ofEpochSecond(timestamps.optLong(index))
+            .atZone(zone)
+            .toLocalDate()
+            .toString()
+        points.add(HistoricalPoint(date, close))
+    }
+    return points.distinctBy { it.date }.sortedBy { it.date }
+}
+
+private fun parseYahooPriceOnlyChartPoints(json: String): List<HistoricalPoint> {
+    val chart = JSONObject(json).optJSONObject("chart") ?: return emptyList()
+    chart.optJSONObject("error")?.let { error ->
+        throw IllegalStateException(error.optString("description").ifBlank { "Yahoo 응답 오류" })
+    }
+    val result = chart.optJSONArray("result")?.optJSONObject(0) ?: return emptyList()
+    val timestamps = result.optJSONArray("timestamp") ?: return emptyList()
+    val closeArray = result
+        .optJSONObject("indicators")
+        ?.optJSONArray("quote")
+        ?.optJSONObject(0)
+        ?.optJSONArray("close")
         ?: return emptyList()
     val points = mutableListOf<HistoricalPoint>()
     val zone = ZoneId.of("UTC")
@@ -14933,6 +15561,7 @@ private val BackupPreferenceNames = listOf(
     "long_run_history",
     "long_run_dividend_history",
     VolatilityHistoryPreferences,
+    ThreeAssetPriceHistoryPreferences,
     ProtectionStore.PreferencesName
 )
 
@@ -15058,6 +15687,9 @@ private fun restorePreferenceFromJson(context: Context, name: String, json: JSON
 
 private const val SimulationPreferenceName = "long_run_portfolio"
 private const val LastBacktestPresetKey = "last_backtest_preset"
+private const val KoreanInflationRatesCacheKey = "korean_inflation_rates"
+private const val KoreanInflationRatesCachedAtKey = "korean_inflation_rates_cached_at"
+private const val KoreanInflationCacheDurationMs = 7L * 24L * 60L * 60L * 1000L
 private const val LastDividendPresetKey = "last_dividend_preset"
 private const val LastDividendChartUpdateSnapshotKey = "last_dividend_chart_update_snapshot"
 private const val LastSelfDividendPresetKey = "last_self_dividend_preset"
@@ -15345,6 +15977,9 @@ private fun backtestPresetToJson(preset: BacktestPreset): JSONObject = JSONObjec
     put("contributionAmount", preset.contributionAmount)
     put("dividendReinvest", preset.dividendReinvest)
     put("exchangeRateEnabled", preset.exchangeRateEnabled)
+    put("rollingBacktestEnabled", preset.rollingBacktestEnabled)
+    put("rollingStartYear", preset.rollingStartYear)
+    put("rollingIntervalYears", preset.rollingIntervalYears)
     put("assets", JSONArray().apply { preset.assets.forEach { put(backtestAssetToJson(it)) } })
     preset.result?.let { put("result", backtestResultToJson(it)) }
 }
@@ -15361,6 +15996,9 @@ private fun backtestPresetFromJson(item: JSONObject): BacktestPreset = BacktestP
     contributionAmount = item.optString("contributionAmount", "1000000"),
     dividendReinvest = item.optBoolean("dividendReinvest", true),
     exchangeRateEnabled = item.optBoolean("exchangeRateEnabled", true),
+    rollingBacktestEnabled = item.optBoolean("rollingBacktestEnabled", false),
+    rollingStartYear = item.optString("rollingStartYear", item.optString("startYear", "2010")),
+    rollingIntervalYears = item.optString("rollingIntervalYears", "10"),
     assets = item.optJSONArray("assets")?.let { array ->
         (0 until array.length()).mapNotNull { array.optJSONObject(it)?.let(::backtestAssetFromJson) }
     } ?: emptyList(),
@@ -15398,6 +16036,10 @@ private fun backtestResultToJson(result: BacktestResultUi): JSONObject = JSONObj
         }
     })
     put("usedHistoricalData", result.usedHistoricalData)
+    put("rollingResults", JSONArray().apply {
+        result.rollingResults.forEach { put(rollingBacktestSummaryToJson(it)) }
+    })
+    put("rollingInflationAdjustmentVersion", 2)
 }
 
 private fun backtestResultFromJson(item: JSONObject): BacktestResultUi = BacktestResultUi(
@@ -15429,8 +16071,38 @@ private fun backtestResultFromJson(item: JSONObject): BacktestResultUi = Backtes
             (0 until allocations.length()).mapNotNull { allocations.optJSONObject(it)?.let(::backtestAllocationFromJson) }
         }
     } ?: emptyList(),
-    usedHistoricalData = item.optBoolean("usedHistoricalData", false)
+    usedHistoricalData = item.optBoolean("usedHistoricalData", false),
+    rollingResults = if (item.optInt("rollingInflationAdjustmentVersion", 0) >= 2) {
+        item.optJSONArray("rollingResults")?.let { array ->
+            (0 until array.length()).mapNotNull {
+                array.optJSONObject(it)?.let(::rollingBacktestSummaryFromJson)
+            }
+        } ?: emptyList()
+    } else {
+        emptyList()
+    }
 )
+
+private fun rollingBacktestSummaryToJson(summary: RollingBacktestSummary): JSONObject = JSONObject().apply {
+    put("startYear", summary.startYear)
+    put("endYear", summary.endYear)
+    put("annualizedReturnPercent", summary.annualizedReturnPercent)
+    put("maxDrawdownPercent", summary.maxDrawdownPercent)
+    put("finalAssetWon", summary.finalAssetWon)
+    put("inflationAdjustedFinalAssetWon", summary.inflationAdjustedFinalAssetWon)
+    put("usedHistoricalData", summary.usedHistoricalData)
+}
+
+private fun rollingBacktestSummaryFromJson(item: JSONObject): RollingBacktestSummary =
+    RollingBacktestSummary(
+        startYear = item.optInt("startYear"),
+        endYear = item.optInt("endYear"),
+        annualizedReturnPercent = item.optDouble("annualizedReturnPercent"),
+        maxDrawdownPercent = item.optDouble("maxDrawdownPercent"),
+        finalAssetWon = item.optLong("finalAssetWon"),
+        inflationAdjustedFinalAssetWon = item.optLong("inflationAdjustedFinalAssetWon"),
+        usedHistoricalData = item.optBoolean("usedHistoricalData", false)
+    )
 
 private fun backtestReportRowToJson(row: BacktestReportRow): JSONObject = JSONObject().apply {
     put("year", row.year)
@@ -15570,17 +16242,24 @@ private fun fourAssetDistributionPresetToJson(preset: FourAssetDistributionPrese
     put("name", preset.name)
     put("totalCapitalEok", preset.totalCapitalEok)
     put("monthlyExpenseMan", preset.monthlyExpenseMan)
+    put("schdEnabled", preset.schdEnabled)
+    put("jepqEnabled", preset.jepqEnabled)
+    put("vooEnabled", preset.vooEnabled)
+    put("qldEnabled", preset.qldEnabled)
     put("schdRatio", preset.schdRatio)
     put("jepqRatio", preset.jepqRatio)
+    put("vooRatio", preset.vooRatio)
     put("qldRatio", preset.qldRatio)
     put("cashRatio", preset.cashRatio)
     put("appliedSchdRatio", preset.appliedSchdRatio)
     put("appliedJepqRatio", preset.appliedJepqRatio)
+    put("appliedVooRatio", preset.appliedVooRatio)
     put("appliedQldRatio", preset.appliedQldRatio)
     put("appliedCashRatio", preset.appliedCashRatio)
     put("exchangeRate", preset.exchangeRate)
     put("schdPrice", preset.schdPrice)
     put("jepqPrice", preset.jepqPrice)
+    put("vooPrice", preset.vooPrice)
     put("qldPrice", preset.qldPrice)
     put("schdYield", preset.schdYield)
     put("schdDividendGrowth", preset.schdDividendGrowth)
@@ -15588,9 +16267,11 @@ private fun fourAssetDistributionPresetToJson(preset: FourAssetDistributionPrese
     put("jepqYield", preset.jepqYield)
     put("jepqDividendGrowth", preset.jepqDividendGrowth)
     put("jepqPriceGrowth", preset.jepqPriceGrowth)
+    put("vooPriceGrowth", preset.vooPriceGrowth)
     put("qldPriceGrowth", preset.qldPriceGrowth)
     put("cashYield", preset.cashYield)
     put("inflationRate", preset.inflationRate)
+    put("overseasDividendTaxRate", preset.overseasDividendTaxRate)
     put("taxAndInsuranceRate", preset.taxAndInsuranceRate)
     put("stressTestEnabled", preset.stressTestEnabled)
 }
@@ -15619,23 +16300,32 @@ private fun fourAssetDistributionPresetFromJson(item: JSONObject): FourAssetDist
     )
     val schdRatio = formatDecimal(draftRatios.first)
     val jepqRatio = formatDecimal(draftRatios.second)
+    val vooRatio = item.optString("vooRatio", "0")
     val qldRatio = formatDecimal(draftRatios.third)
     val cashRatio = "0"
+    val loadedName = item.optString("name", "배당+성장")
     return FourAssetDistributionPreset(
-        name = item.optString("name", "3ETF 분배"),
+        name = if (loadedName == "3ETF 분배" || loadedName == "배당주+성장주 조합") "배당+성장" else loadedName,
         totalCapitalEok = item.optString("totalCapitalEok", "13"),
         monthlyExpenseMan = item.optString("monthlyExpenseMan", "400"),
+        schdEnabled = item.optBoolean("schdEnabled", true),
+        jepqEnabled = item.optBoolean("jepqEnabled", true),
+        vooEnabled = item.optBoolean("vooEnabled", true),
+        qldEnabled = item.optBoolean("qldEnabled", true),
         schdRatio = schdRatio,
         jepqRatio = jepqRatio,
+        vooRatio = vooRatio,
         qldRatio = qldRatio,
         cashRatio = cashRatio,
         appliedSchdRatio = appliedRatios.first,
         appliedJepqRatio = appliedRatios.second,
+        appliedVooRatio = item.optDouble("appliedVooRatio", vooRatio.toDoubleOrNull() ?: 0.0),
         appliedQldRatio = appliedRatios.third,
         appliedCashRatio = 0.0,
         exchangeRate = item.optString("exchangeRate", "1600"),
         schdPrice = item.optString("schdPrice", "80.0"),
         jepqPrice = item.optString("jepqPrice", "50.0"),
+        vooPrice = item.optString("vooPrice", "500.0"),
         qldPrice = item.optString("qldPrice", "90.0"),
         schdYield = item.optString("schdYield", "3.0"),
         schdDividendGrowth = item.optString("schdDividendGrowth", "6.0"),
@@ -15643,9 +16333,11 @@ private fun fourAssetDistributionPresetFromJson(item: JSONObject): FourAssetDist
         jepqYield = item.optString("jepqYield", "8.0"),
         jepqDividendGrowth = item.optString("jepqDividendGrowth", "2.0"),
         jepqPriceGrowth = item.optString("jepqPriceGrowth", "2.0"),
+        vooPriceGrowth = item.optString("vooPriceGrowth", "8.0"),
         qldPriceGrowth = item.optString("qldPriceGrowth", "15.0"),
         cashYield = item.optString("cashYield", "3.0"),
         inflationRate = item.optString("inflationRate", "3.0"),
+        overseasDividendTaxRate = item.optString("overseasDividendTaxRate", "15"),
         taxAndInsuranceRate = item.optString("taxAndInsuranceRate", "23.4"),
         stressTestEnabled = item.optBoolean("stressTestEnabled", false)
     )

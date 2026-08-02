@@ -93,6 +93,7 @@ class ScenarioComparisonEngineTest {
         year = year,
         schdAssetWon = 0L,
         jepqAssetWon = 0L,
+        vooAssetWon = 0L,
         qldAssetWon = 0L,
         cashWon = 0L,
         grossAnnualDividendWon = netAnnualDividendWon,

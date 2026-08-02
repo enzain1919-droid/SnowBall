@@ -35,7 +35,7 @@ object SelfDividendEngine {
         years: Int = 20
     ): List<SelfDividendProjectionRow> {
         val lots = assets
-            .filter { it.investmentAmount > 0.0 && it.baseAnnualWithdrawal > 0.0 }
+            .filter { it.investmentAmount > 0.0 && it.baseAnnualWithdrawal >= 0.0 }
             .map { asset ->
                 LotState(
                     taxable = asset.taxable,

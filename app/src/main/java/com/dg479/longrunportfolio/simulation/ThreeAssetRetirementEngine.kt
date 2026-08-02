@@ -9,6 +9,7 @@ import kotlin.math.roundToLong
 data class ThreeAssetAllocation(
     val schd: Double,
     val jepq: Double,
+    val voo: Double,
     val qld: Double,
     val cash: Double = 0.0
 )
@@ -20,6 +21,7 @@ data class ThreeAssetRetirementInput(
     val exchangeRate: Double,
     val schdPrice: Double,
     val jepqPrice: Double,
+    val vooPrice: Double,
     val qldPrice: Double,
     val schdYield: Double,
     val schdDividendGrowth: Double,
@@ -27,9 +29,11 @@ data class ThreeAssetRetirementInput(
     val jepqYield: Double,
     val jepqDividendGrowth: Double,
     val jepqPriceGrowth: Double,
+    val vooPriceGrowth: Double,
     val qldPriceGrowth: Double,
     val cashYield: Double,
     val inflationRate: Double,
+    val overseasDividendTaxRate: Double,
     val taxAndInsuranceRate: Double,
     val stressTestEnabled: Boolean
 )
@@ -38,6 +42,7 @@ data class ThreeAssetAnnualRow(
     val year: Int,
     val schdAssetWon: Long,
     val jepqAssetWon: Long,
+    val vooAssetWon: Long,
     val qldAssetWon: Long,
     val cashWon: Long,
     val grossAnnualDividendWon: Long,
@@ -51,6 +56,7 @@ data class ThreeAssetAnnualRow(
 data class ThreeAssetRetirementResult(
     val initialSchdShares: Double,
     val initialJepqShares: Double,
+    val initialVooShares: Double,
     val initialQldShares: Double,
     val cashDepletedYear: Int?,
     val finalAssetWon: Long,
@@ -63,21 +69,25 @@ object ThreeAssetRetirementEngine {
     fun calculate(input: ThreeAssetRetirementInput, years: Int = 20): ThreeAssetRetirementResult {
         val initialSchdValue = input.totalCapitalWon * input.allocation.schd
         val initialJepqValue = input.totalCapitalWon * input.allocation.jepq
+        val initialVooValue = input.totalCapitalWon * input.allocation.voo
         val initialQldValue = input.totalCapitalWon * input.allocation.qld
         var cashValue = input.totalCapitalWon * input.allocation.cash
 
         val schdShares = initialSchdValue / input.exchangeRate / input.schdPrice
         val jepqShares = initialJepqValue / input.exchangeRate / input.jepqPrice
+        val vooShares = initialVooValue / input.exchangeRate / input.vooPrice
         val qldShares = initialQldValue / input.exchangeRate / input.qldPrice
 
         var schdMultiplier = 1.0
         var jepqMultiplier = 1.0
+        var vooMultiplier = 1.0
         var qldMultiplier = 1.0
         var annualExpense = input.monthlyExpenseWon * 12.0
         var cashDepletedYear: Int? = null
         var finalYearTotal = 0.0
         var currentSchdPrice = input.schdPrice
         var currentJepqPrice = input.jepqPrice
+        var currentVooPrice = input.vooPrice
         var currentQldPrice = input.qldPrice
         val rows = mutableListOf<ThreeAssetAnnualRow>()
 
@@ -85,15 +95,18 @@ object ThreeAssetRetirementEngine {
             if (input.stressTestEnabled && year == 1) {
                 currentSchdPrice = input.schdPrice * 0.7
                 currentJepqPrice = input.jepqPrice * 0.7
+                currentVooPrice = input.vooPrice * 0.7
                 currentQldPrice = input.qldPrice * 0.4
             } else if (!input.stressTestEnabled || year > 3) {
                 currentSchdPrice *= 1.0 + input.schdPriceGrowth
                 currentJepqPrice *= 1.0 + input.jepqPriceGrowth
+                currentVooPrice *= 1.0 + input.vooPriceGrowth
                 currentQldPrice *= 1.0 + input.qldPriceGrowth
             }
 
             var schdValue = schdShares * schdMultiplier * currentSchdPrice * input.exchangeRate
             var jepqValue = jepqShares * jepqMultiplier * currentJepqPrice * input.exchangeRate
+            var vooValue = vooShares * vooMultiplier * currentVooPrice * input.exchangeRate
             var qldValue = qldShares * qldMultiplier * currentQldPrice * input.exchangeRate
             var availableCash = cashValue
 
@@ -109,10 +122,14 @@ object ThreeAssetRetirementEngine {
                 schdShares * schdMultiplier * input.schdPrice * input.schdYield * schdDividendFactor * input.exchangeRate +
                     jepqShares * jepqMultiplier * input.jepqPrice * input.jepqYield * jepqDividendFactor * input.exchangeRate +
                     availableCash.coerceAtLeast(0.0) * input.cashYield
-            val netDividend = grossDividend * (1.0 - input.taxAndInsuranceRate)
+            val totalDividendDeductionRate = (
+                input.overseasDividendTaxRate.coerceAtLeast(0.0) +
+                    input.taxAndInsuranceRate.coerceAtLeast(0.0)
+                ).coerceAtMost(1.0)
+            val netDividend = grossDividend * (1.0 - totalDividendDeductionRate)
             val actualAnnualCashFlow = minOf(
                 annualExpense.coerceAtLeast(0.0),
-                (netDividend + availableCash + schdValue + jepqValue + qldValue).coerceAtLeast(0.0)
+                (netDividend + availableCash + schdValue + jepqValue + vooValue + qldValue).coerceAtLeast(0.0)
             )
             val shortfall = annualExpense - netDividend
             val actions = mutableListOf<String>()
@@ -142,6 +159,9 @@ object ThreeAssetRetirementEngine {
                 jepqValue = sellAsset("JEPQ", jepqValue) { sale ->
                     jepqMultiplier *= 1.0 - sale / jepqValue
                 }
+                vooValue = sellAsset("VOO", vooValue) { sale ->
+                    vooMultiplier *= 1.0 - sale / vooValue
+                }
                 qldValue = sellAsset("QLD", qldValue) { sale ->
                     qldMultiplier *= 1.0 - sale / qldValue
                 }
@@ -153,12 +173,13 @@ object ThreeAssetRetirementEngine {
             }
 
             cashValue = availableCash
-            val endTotal = schdValue + jepqValue + qldValue + cashValue
+            val endTotal = schdValue + jepqValue + vooValue + qldValue + cashValue
             finalYearTotal = endTotal
             rows += ThreeAssetAnnualRow(
                 year = year,
                 schdAssetWon = schdValue.roundToLong().coerceAtLeast(0L),
                 jepqAssetWon = jepqValue.roundToLong().coerceAtLeast(0L),
+                vooAssetWon = vooValue.roundToLong().coerceAtLeast(0L),
                 qldAssetWon = qldValue.roundToLong().coerceAtLeast(0L),
                 cashWon = cashValue.roundToLong().coerceAtLeast(0L),
                 grossAnnualDividendWon = grossDividend.roundToLong().coerceAtLeast(0L),
@@ -180,6 +201,7 @@ object ThreeAssetRetirementEngine {
         return ThreeAssetRetirementResult(
             initialSchdShares = schdShares,
             initialJepqShares = jepqShares,
+            initialVooShares = vooShares,
             initialQldShares = qldShares,
             cashDepletedYear = cashDepletedYear,
             finalAssetWon = finalYearTotal.roundToLong().coerceAtLeast(0L),
