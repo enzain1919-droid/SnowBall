@@ -41,27 +41,16 @@ object ThreeAssetHistoricalRateEngine {
             .distinctBy { it.date }
             .sortedBy { it.date }
         val firstDividend = dividends.firstOrNull()
-        val averageDividendYield = firstDividend?.let { first ->
-            prices
-                .groupBy { it.date.year }
-                .values
-                .mapNotNull { yearlyPrices ->
-                    val yearEndPrice = yearlyPrices.maxBy { it.date }
-                    if (yearEndPrice.date.isBefore(first.date.plusYears(1))) return@mapNotNull null
-                    val trailingDividend = trailingDividend(dividends, yearEndPrice.date)
-                    if (trailingDividend <= 0.0) return@mapNotNull null
-                    (trailingDividend / yearEndPrice.close * 100.0)
-                        .takeIf { it.isFinite() && it >= 0.0 }
-                }
-                .average()
-                .takeIf { it.isFinite() }
-        }
+        val averageDividendYield = FullHistoryRateMath.averageAnnualDividendYieldPercent(
+            prices = prices.map { it.date to it.close },
+            dividends = dividends
+        )
 
         val dividendGrowth = firstDividend?.date?.plusYears(1)?.let { firstComparableDate ->
             val lastDividendDate = dividends.lastOrNull()?.date ?: return@let null
             val dividendYears = yearsBetween(firstComparableDate, lastDividendDate)
-            val firstAnnualDividend = trailingDividend(dividends, firstComparableDate)
-            val lastAnnualDividend = trailingDividend(dividends, lastDividendDate)
+            val firstAnnualDividend = FullHistoryRateMath.trailingAnnualDividend(dividends, firstComparableDate)
+            val lastAnnualDividend = FullHistoryRateMath.trailingAnnualDividend(dividends, lastDividendDate)
             if (dividendYears >= 1.0 && firstAnnualDividend > 0.0 && lastAnnualDividend > 0.0) {
                 ((lastAnnualDividend / firstAnnualDividend).pow(1.0 / dividendYears) - 1.0)
                     .takeIf { it.isFinite() }
@@ -79,13 +68,6 @@ object ThreeAssetHistoricalRateEngine {
             priceStartDate = firstPrice.date,
             priceEndDate = lastPrice.date
         )
-    }
-
-    private fun trailingDividend(points: List<HistoricalDividendPoint>, endDate: LocalDate): Double {
-        val startExclusive = endDate.minusYears(1)
-        return points
-            .filter { it.date.isAfter(startExclusive) && !it.date.isAfter(endDate) }
-            .sumOf { it.amount }
     }
 
     private fun yearsBetween(start: LocalDate, end: LocalDate): Double =

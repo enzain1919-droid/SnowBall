@@ -26,6 +26,22 @@ class ThreeAssetHistoricalRateEngineTest {
     }
 
     @Test
+    fun averageDividendYieldIncludesCompletedListingYearsBeforeFirstDividend() {
+        val prices = listOf(
+            HistoricalClosePoint(LocalDate.of(2020, 1, 1), 100.0),
+            HistoricalClosePoint(LocalDate.of(2021, 12, 31), 100.0),
+            HistoricalClosePoint(LocalDate.of(2022, 12, 31), 100.0)
+        )
+        val dividends = (1..4).map { quarter ->
+            HistoricalDividendPoint(LocalDate.of(2022, quarter * 3, 1), 1.0)
+        }
+
+        val result = ThreeAssetHistoricalRateEngine.calculate(prices, dividends)!!
+
+        assertEquals(2.0, result.averageDividendYieldPercent!!, 1e-9)
+    }
+
+    @Test
     fun priceGrowthUsesProvidedPriceOnlyCloseSeries() {
         val result = ThreeAssetHistoricalRateEngine.calculate(
             rawPrices = listOf(

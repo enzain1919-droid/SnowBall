@@ -14,7 +14,7 @@ data class HistoricalAnnualRates(
     val priceCagrPercent: Double,
     val priceStartDate: LocalDate,
     val priceEndDate: LocalDate,
-    val dividendYieldPercent: Double?,
+    val averageDividendYieldPercent: Double?,
     val dividendGrowthCagrPercent: Double?,
     val dividendStartDate: LocalDate?,
     val dividendEndDate: LocalDate?
@@ -42,10 +42,10 @@ object HistoricalRateEngine {
             .filter { it.amount > 0.0 && !it.date.isAfter(lastPrice.date) }
             .distinctBy { it.date }
             .sortedBy { it.date }
-        val trailingDividend = trailingDividend(dividends, lastPrice.date)
-        val dividendYield = trailingDividend
-            .takeIf { it > 0.0 }
-            ?.let { it / lastPrice.adjustedClose * 100.0 }
+        val averageDividendYield = FullHistoryRateMath.averageAnnualDividendYieldPercent(
+            prices = prices.map { it.date to it.adjustedClose },
+            dividends = dividends
+        )
         val firstDividend = dividends.firstOrNull()
         val dividendStartDate = firstDividend?.date?.plusYears(1)
         val dividendEndDate = dividends.lastOrNull()?.date
@@ -55,8 +55,8 @@ object HistoricalRateEngine {
             dividendEndDate.isAfter(dividendStartDate)
         ) {
             val dividendYears = yearsBetween(dividendStartDate, dividendEndDate)
-            val startDividend = trailingDividend(dividends, dividendStartDate)
-            val endDividend = trailingDividend(dividends, dividendEndDate)
+            val startDividend = FullHistoryRateMath.trailingAnnualDividend(dividends, dividendStartDate)
+            val endDividend = FullHistoryRateMath.trailingAnnualDividend(dividends, dividendEndDate)
             if (dividendYears >= 1.0 && startDividend > 0.0 && endDividend > 0.0) {
                 ((endDividend / startDividend).pow(1.0 / dividendYears) - 1.0)
                     .takeIf { it.isFinite() }
@@ -73,18 +73,11 @@ object HistoricalRateEngine {
             priceCagrPercent = priceCagr * 100.0,
             priceStartDate = firstPrice.date,
             priceEndDate = lastPrice.date,
-            dividendYieldPercent = dividendYield,
+            averageDividendYieldPercent = averageDividendYield,
             dividendGrowthCagrPercent = dividendGrowth,
             dividendStartDate = dividendStartDate,
             dividendEndDate = dividendEndDate
         )
-    }
-
-    private fun trailingDividend(points: List<HistoricalDividendPoint>, endDate: LocalDate): Double {
-        val startExclusive = endDate.minusYears(1)
-        return points
-            .filter { it.date.isAfter(startExclusive) && !it.date.isAfter(endDate) }
-            .sumOf { it.amount }
     }
 
     private fun yearsBetween(start: LocalDate, end: LocalDate): Double =

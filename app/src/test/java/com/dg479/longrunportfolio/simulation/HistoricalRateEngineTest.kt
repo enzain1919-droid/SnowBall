@@ -8,7 +8,7 @@ import org.junit.Test
 
 class HistoricalRateEngineTest {
     @Test
-    fun calculatesFullHistoryPriceCagrAndLatestYield() {
+    fun calculatesFullHistoryPriceCagrAndAverageAnnualYield() {
         val result = HistoricalRateEngine.calculate(
             rawPrices = listOf(
                 HistoricalPricePoint(LocalDate.of(2020, 1, 1), 100.0),
@@ -20,8 +20,24 @@ class HistoricalRateEngineTest {
         )!!
 
         assertEquals(14.87, result.priceCagrPercent, 0.02)
-        assertEquals(4.0, result.dividendYieldPercent!!, 1e-9)
+        assertEquals(4.0, result.averageDividendYieldPercent!!, 1e-9)
         assertEquals(200.0, result.latestPrice, 0.0)
+    }
+
+    @Test
+    fun averageDividendYieldIncludesCompletedListingYearsBeforeFirstDividend() {
+        val result = HistoricalRateEngine.calculate(
+            rawPrices = listOf(
+                HistoricalPricePoint(LocalDate.of(2020, 1, 1), 100.0),
+                HistoricalPricePoint(LocalDate.of(2021, 12, 31), 100.0),
+                HistoricalPricePoint(LocalDate.of(2022, 12, 31), 100.0)
+            ),
+            rawDividends = (1..4).map { quarter ->
+                HistoricalDividendPoint(LocalDate.of(2022, quarter * 3, 1), 1.0)
+            }
+        )!!
+
+        assertEquals(2.0, result.averageDividendYieldPercent!!, 1e-9)
     }
 
     @Test

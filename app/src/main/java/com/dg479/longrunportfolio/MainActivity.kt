@@ -29,6 +29,7 @@ import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Row
@@ -44,6 +45,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBars
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -95,11 +97,13 @@ import androidx.compose.ui.draw.clipToBounds
 import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.ColorFilter
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.PathEffect
 import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.drawscope.DrawScope
+import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.nativeCanvas
 import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.text.font.FontWeight
@@ -117,6 +121,7 @@ import androidx.compose.ui.input.nestedscroll.NestedScrollSource
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.unit.Density
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.Velocity
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -218,8 +223,106 @@ private val FourAssetCashColor = Color(0xFFF59E0B)
 private val SimulatorBacktestColor = Color(0xFF2563EB)
 private val SimulatorCashFlowColor = Color(0xFF07845F)
 private val SimulatorAnalysisColor = Color(0xFF7C3AED)
+private val ChartActualColor = NegativeBlue
+private val ChartIncomeColor = FourAssetSchdColor
+private const val ChartGridStrokeWidth = 1.2f
+private const val ChartSeriesStrokeWidth = 4f
+private const val ChartSelectionStrokeWidth = 2f
+private const val ChartSelectionOuterRadius = 8f
+private const val ChartSelectionInnerRadius = 5.5f
+private const val ChartAxisTextSize = 18f
+private val ResponsiveContentMaxWidth = 920.dp
 private const val DefaultUsdKrw = 1535.29
 private var DisplayCurrency = "KRW"
+
+private fun Modifier.appChartFrame(): Modifier =
+    clip(RoundedCornerShape(16.dp))
+        .background(SoftSurface)
+        .clipToBounds()
+
+private fun chartGridColor(): Color = LineColor.copy(alpha = if (PanelColor == Color.White) 0.9f else 0.78f)
+
+private fun chartSelectionColor(): Color = TextSecondary.copy(alpha = 0.55f)
+
+private fun DrawScope.drawAppChartGrid(
+    left: Float,
+    right: Float,
+    top: Float,
+    bottom: Float,
+    horizontalLines: Int = 4,
+    verticalLines: Int = 0
+) {
+    repeat(horizontalLines.coerceAtLeast(2)) { index ->
+        val ratio = index / (horizontalLines - 1f)
+        val y = top + (bottom - top) * ratio
+        drawLine(chartGridColor(), Offset(left, y), Offset(right, y), strokeWidth = ChartGridStrokeWidth)
+    }
+    if (verticalLines >= 2) {
+        repeat(verticalLines) { index ->
+            val ratio = index / (verticalLines - 1f)
+            val x = left + (right - left) * ratio
+            drawLine(chartGridColor(), Offset(x, top), Offset(x, bottom), strokeWidth = ChartGridStrokeWidth)
+        }
+    }
+}
+
+private fun DrawScope.drawAppChartSeries(
+    points: List<Offset>,
+    color: Color,
+    strokeWidth: Float = ChartSeriesStrokeWidth
+) {
+    for (index in 0 until points.lastIndex) {
+        drawLine(color, points[index], points[index + 1], strokeWidth = strokeWidth, cap = StrokeCap.Round)
+    }
+}
+
+private fun DrawScope.drawAppChartSelection(x: Float, top: Float, bottom: Float) {
+    drawLine(
+        chartSelectionColor(),
+        Offset(x, top),
+        Offset(x, bottom),
+        strokeWidth = ChartSelectionStrokeWidth
+    )
+}
+
+private fun DrawScope.drawAppChartPoint(point: Offset, color: Color) {
+    drawCircle(SoftSurface, radius = ChartSelectionOuterRadius, center = point)
+    drawCircle(color, radius = ChartSelectionInnerRadius, center = point)
+}
+
+private fun responsiveHorizontalPadding(width: Dp): Dp = when {
+    width < 420.dp -> 14.dp
+    width < 600.dp -> 20.dp
+    width < 900.dp -> 28.dp
+    else -> 36.dp
+}
+
+private fun responsiveDensityScale(width: Dp, requestedScale: Float): Float {
+    val compactFloor = requestedScale.coerceIn(0.86f, 1f)
+    return when {
+        width < 360.dp -> compactFloor
+        width < 600.dp -> maxOf(compactFloor, 0.9f)
+        width < 900.dp -> maxOf(compactFloor, 0.94f)
+        else -> 1f
+    }
+}
+
+@Composable
+private fun AppChartLegendItem(label: String, color: Color) {
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Canvas(modifier = Modifier.width(22.dp).height(10.dp)) {
+            drawLine(
+                color,
+                Offset(0f, size.height / 2f),
+                Offset(size.width, size.height / 2f),
+                strokeWidth = ChartSeriesStrokeWidth,
+                cap = StrokeCap.Round
+            )
+        }
+        Spacer(modifier = Modifier.width(6.dp))
+        Text(label, color = TextSecondary, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+    }
+}
 private var DisplayUsdKrw = DefaultUsdKrw
 private var HidePortfolioAmounts = false
 private const val MarketRefreshIntervalMs = 5L * 60L * 1000L
@@ -324,6 +427,7 @@ private data class SavedAppState(
 private data class AppSettings(
     val displayMode: String = DisplayMode.SYSTEM,
     val currency: String = CurrencyMode.KRW,
+    val simulatorCurrency: String = CurrencyMode.KRW,
     val apiProvider: String = ApiProvider.KIS,
     val kisAppKey: String = "",
     val kisAppSecret: String = "",
@@ -481,7 +585,7 @@ private data class DividendChartUpdateSnapshot(
     val ticker: String,
     val targetMonthlyDividend: Long,
     val latestPrice: Double?,
-    val dividendYieldPercent: Double?,
+    val averageDividendYieldPercent: Double?,
     val dividendGrowthMetric: DividendMetricUi,
     val priceGrowthMetric: DividendMetricUi,
     val pricePoints: List<Pair<LocalDate, Double>>,
@@ -713,7 +817,13 @@ private data class MarketPosition(
     val color: Color
 )
 
-private data class TabItem(val label: String, val glyph: String)
+private enum class BottomTabIcon {
+    Home,
+    Simulator,
+    Report
+}
+
+private data class TabItem(val label: String, val icon: BottomTabIcon)
 
 private enum class AppRoute {
     Main,
@@ -752,13 +862,16 @@ class MainActivity : ComponentActivity() {
 @Composable
 private fun ScaledApp(scale: Float, content: @Composable () -> Unit) {
     val currentDensity = LocalDensity.current
-    CompositionLocalProvider(
-        LocalDensity provides Density(
-            density = currentDensity.density * 0.9f,
-            fontScale = currentDensity.fontScale
-        ),
-        content = content
-    )
+    BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
+        val adaptiveScale = responsiveDensityScale(maxWidth, scale)
+        CompositionLocalProvider(
+            LocalDensity provides Density(
+                density = currentDensity.density * adaptiveScale,
+                fontScale = currentDensity.fontScale
+            ),
+            content = content
+        )
+    }
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -878,7 +991,14 @@ private fun LongRunApp() {
     var goalPlan by remember { mutableStateOf(savedState.goalPlan) }
     var usdKrw by remember { mutableStateOf(savedState.usdKrw) }
     var isRefreshing by remember { mutableStateOf(false) }
-    applyCurrencyDisplay(appSettings.currency, usdKrw)
+    val displayCurrency = if (
+        showLockedSimulator || (isAppUnlocked && route == AppRoute.Main && selectedTab == 1)
+    ) {
+        appSettings.simulatorCurrency
+    } else {
+        appSettings.currency
+    }
+    applyCurrencyDisplay(displayCurrency, usdKrw)
 
     val drawerState = rememberDrawerState(initialValue = DrawerValue.Closed)
     val scope = rememberCoroutineScope()
@@ -1008,8 +1128,23 @@ private fun LongRunApp() {
         plan = goalPlan,
         fallbackTotal = goalChartFallbackTotal
     )
+    var sharedGoalChartPoints by remember(goalChartCacheSignature) {
+        mutableStateOf(
+            loadGoalChartSnapshot(
+                context = context.applicationContext,
+                accounts = goalChartAccountsSnapshot,
+                plan = goalPlan,
+                fallbackTotal = goalChartFallbackTotal
+            )?.points ?: goalChartPoints(
+                context = context.applicationContext,
+                accounts = goalChartAccountsSnapshot,
+                plan = goalPlan,
+                fallbackTotal = goalChartFallbackTotal
+            )
+        )
+    }
     LaunchedEffect(goalChartCacheSignature) {
-        refreshGoalChartCacheOnAppLaunch(
+        sharedGoalChartPoints = refreshGoalChartCacheOnAppLaunch(
             context = context.applicationContext,
             accounts = goalChartAccountsSnapshot,
             plan = goalPlan,
@@ -1124,6 +1259,7 @@ private fun LongRunApp() {
                 goalPlan = goalPlan,
                 usdKrw = usdKrw,
                 appSettings = appSettings,
+                goalChartPoints = sharedGoalChartPoints,
                 investmentMode = investmentModes[0] ?: InvestmentMode.VALUATION,
                 profitMode = appSettings.homeProfitMode,
                 onInvestmentModeChange = { investmentModes[0] = it },
@@ -1338,6 +1474,11 @@ private fun LongRunApp() {
                     onFeatureGuideClick = { route = AppRoute.FeatureGuide },
                     onCurrencyChange = {
                         val updated = appSettings.copy(currency = it)
+                        appSettings = updated
+                        saveAppSettings(context, updated)
+                    },
+                    onSimulatorCurrencyChange = {
+                        val updated = appSettings.copy(simulatorCurrency = it)
                         appSettings = updated
                         saveAppSettings(context, updated)
                     },
@@ -1668,6 +1809,7 @@ private fun MainScaffold(
     goalPlan: GoalPlan,
     usdKrw: Double,
     appSettings: AppSettings,
+    goalChartPoints: List<GoalChartPoint>,
     investmentMode: String,
     profitMode: String,
     onInvestmentModeChange: (String) -> Unit,
@@ -1679,9 +1821,9 @@ private fun MainScaffold(
     onGoalLongClick: () -> Unit
 ) {
     val tabs = listOf(
-        TabItem("홈", "H"),
-        TabItem("시뮬레이터", "S"),
-        TabItem("리포트", "R")
+        TabItem("홈", BottomTabIcon.Home),
+        TabItem("시뮬레이터", BottomTabIcon.Simulator),
+        TabItem("리포트", BottomTabIcon.Report)
     )
 
     Scaffold(
@@ -1693,14 +1835,14 @@ private fun MainScaffold(
                     NavigationBarItem(
                         selected = selectedTab == index,
                         onClick = { onTabSelected(index) },
-                        icon = { TabGlyph(tab.glyph, selectedTab == index) },
+                        icon = { BottomNavigationIcon(tab.icon) },
                         label = { Text(tab.label, fontSize = 11.sp) },
                         colors = NavigationBarItemDefaults.colors(
-                            selectedIconColor = TextPrimary,
-                            selectedTextColor = TextPrimary,
+                            selectedIconColor = BrandGreen,
+                            selectedTextColor = BrandGreen,
                             unselectedIconColor = TextSecondary,
                             unselectedTextColor = TextSecondary,
-                            indicatorColor = SoftSurface
+                            indicatorColor = BrandGreen.copy(alpha = if (PanelColor == Color.White) 0.10f else 0.18f)
                         )
                     )
                 }
@@ -1718,6 +1860,7 @@ private fun MainScaffold(
                     0 -> HomeScreen(
                         accounts = accounts,
                         goalPlan = goalPlan,
+                        goalChartPoints = goalChartPoints,
                         usdKrw = usdKrw,
                         investmentMode = investmentMode,
                         profitMode = profitMode,
@@ -1742,6 +1885,7 @@ private fun MainScaffold(
 private fun HomeScreen(
     accounts: List<AccountUi>,
     goalPlan: GoalPlan,
+    goalChartPoints: List<GoalChartPoint>,
     usdKrw: Double,
     investmentMode: String,
     profitMode: String,
@@ -1875,7 +2019,7 @@ private fun HomeScreen(
                             HomeAnalysisShortcutRow(onSelect = { selectedAnalysisSection = it })
                             Spacer(modifier = Modifier.height(24.dp))
                             GoalProgressCard(
-                                accounts = accounts,
+                                chartPoints = goalChartPoints,
                                 totalAmount = total,
                                 principal = principal,
                                 plan = goalPlan,
@@ -1946,9 +2090,7 @@ private fun HomeScreen(
 
     if (showGoalDetail) {
         GoalProgressDetailDialog(
-            accounts = accounts,
-            plan = goalPlan,
-            fallbackTotal = total,
+            points = goalChartPoints,
             onDismiss = { showGoalDetail = false }
         )
     }
@@ -1982,11 +2124,15 @@ private fun HoldingOverviewSheet(holding: HoldingUi, onClose: () -> Unit) {
     val totalProfitText = formatSignedWon(totalProfit)
     val dayProfitText = formatSignedWon(dayProfit)
     val currentPriceText = formatAssetPrice(holding.currentPrice, holding.ticker)
-    Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(start = 24.dp, top = 18.dp, end = 24.dp, bottom = 42.dp)
-    ) {
+    BoxWithConstraints(modifier = Modifier.fillMaxWidth()) {
+        val horizontalPadding = responsiveHorizontalPadding(maxWidth)
+        Column(
+            modifier = Modifier
+                .align(Alignment.TopCenter)
+                .widthIn(max = ResponsiveContentMaxWidth)
+                .fillMaxWidth()
+                .padding(start = horizontalPadding, top = 18.dp, end = horizontalPadding, bottom = 42.dp)
+        ) {
         Text("⌄", color = TextPrimary, fontSize = 34.sp, modifier = Modifier.clickable(onClick = onClose))
         Spacer(modifier = Modifier.height(18.dp))
         Row(verticalAlignment = Alignment.CenterVertically) {
@@ -2003,7 +2149,7 @@ private fun HoldingOverviewSheet(holding: HoldingUi, onClose: () -> Unit) {
             }
         }
         Spacer(modifier = Modifier.height(36.dp))
-        Text(amountText, color = portfolioAmountColor(amountText, TextPrimary), fontSize = 38.sp, lineHeight = 44.sp, fontWeight = FontWeight.ExtraBold)
+        Text(amountText, color = portfolioAmountColor(amountText, TextPrimary), fontSize = 38.sp, lineHeight = 44.sp, fontWeight = FontWeight.ExtraBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
         Spacer(modifier = Modifier.height(6.dp))
         Text("원금 ${formatWon(holding.principal)}", color = TextSecondary, fontSize = 17.sp)
         Spacer(modifier = Modifier.height(32.dp))
@@ -2035,6 +2181,7 @@ private fun HoldingOverviewSheet(holding: HoldingUi, onClose: () -> Unit) {
             }
         }
     }
+    }
 }
 
 @Composable
@@ -2044,19 +2191,24 @@ private fun HoldingOverviewSheet(holding: HoldingUi, accounts: List<AccountUi>, 
     }
     Column(modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
         HoldingOverviewSheet(holding = holding, onClose = onClose)
-        Column(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(start = 24.dp, end = 24.dp, bottom = 42.dp)
-        ) {
-            DividerLine()
-            Spacer(modifier = Modifier.height(24.dp))
-            Text("자산", color = TextPrimary, fontSize = 26.sp, fontWeight = FontWeight.ExtraBold)
-            Spacer(modifier = Modifier.height(18.dp))
-            Text("${holdingAccounts.size}개", color = TextSecondary, fontSize = 17.sp, fontWeight = FontWeight.Bold)
-            Spacer(modifier = Modifier.height(10.dp))
-            holdingAccounts.forEach { (account, accountHolding) ->
-                HomeHoldingAccountRow(account = account, holding = accountHolding)
+        BoxWithConstraints(modifier = Modifier.fillMaxWidth()) {
+            val horizontalPadding = responsiveHorizontalPadding(maxWidth)
+            Column(
+                modifier = Modifier
+                    .align(Alignment.TopCenter)
+                    .widthIn(max = ResponsiveContentMaxWidth)
+                    .fillMaxWidth()
+                    .padding(start = horizontalPadding, end = horizontalPadding, bottom = 42.dp)
+            ) {
+                DividerLine()
+                Spacer(modifier = Modifier.height(24.dp))
+                Text("자산", color = TextPrimary, fontSize = 26.sp, fontWeight = FontWeight.ExtraBold)
+                Spacer(modifier = Modifier.height(18.dp))
+                Text("${holdingAccounts.size}개", color = TextSecondary, fontSize = 17.sp, fontWeight = FontWeight.Bold)
+                Spacer(modifier = Modifier.height(10.dp))
+                holdingAccounts.forEach { (account, accountHolding) ->
+                    HomeHoldingAccountRow(account = account, holding = accountHolding)
+                }
             }
         }
     }
@@ -2162,25 +2314,29 @@ private fun PortfolioAnalysisGrid(onSelect: (String) -> Unit) {
         AnalysisSection.DIVIDEND to "배당",
         AnalysisSection.ALLOCATION to "비중"
     )
-    Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
-        items.chunked(2).forEach { rowItems ->
-            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(14.dp)) {
-                rowItems.forEach { (section, label) ->
-                    Column(
-                        modifier = Modifier
-                            .weight(1f)
-                            .height(142.dp)
-                            .clip(RoundedCornerShape(22.dp))
-                            .background(SoftSurface)
-                            .clickable { onSelect(section) }
-                            .padding(18.dp),
-                        horizontalAlignment = Alignment.CenterHorizontally,
-                        verticalArrangement = Arrangement.Center
-                    ) {
-                        AnalysisShortcutIcon(section, modifier = Modifier.size(44.dp))
-                        Spacer(modifier = Modifier.height(12.dp))
-                        Text(label, color = TextPrimary, fontSize = 21.sp, fontWeight = FontWeight.ExtraBold)
+    BoxWithConstraints(modifier = Modifier.fillMaxWidth()) {
+        val columns = if (maxWidth >= 720.dp) 3 else 2
+        Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
+            items.chunked(columns).forEach { rowItems ->
+                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(14.dp)) {
+                    rowItems.forEach { (section, label) ->
+                        Column(
+                            modifier = Modifier
+                                .weight(1f)
+                                .height(142.dp)
+                                .clip(RoundedCornerShape(22.dp))
+                                .background(SoftSurface)
+                                .clickable { onSelect(section) }
+                                .padding(18.dp),
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.Center
+                        ) {
+                            AnalysisShortcutIcon(section, modifier = Modifier.size(44.dp))
+                            Spacer(modifier = Modifier.height(12.dp))
+                            Text(label, color = TextPrimary, fontSize = 21.sp, fontWeight = FontWeight.ExtraBold)
+                        }
                     }
+                    repeat(columns - rowItems.size) { Spacer(modifier = Modifier.weight(1f)) }
                 }
             }
         }
@@ -2583,7 +2739,9 @@ private fun PortfolioDividendContent(accounts: List<AccountUi>, usdKrw: Double) 
         color = TextPrimary,
         fontSize = 39.sp,
         fontWeight = FontWeight.ExtraBold,
-        lineHeight = 44.sp
+        lineHeight = 44.sp,
+        maxLines = 1,
+        overflow = TextOverflow.Ellipsis
     )
     Spacer(modifier = Modifier.height(4.dp))
     Text(
@@ -2654,7 +2812,9 @@ private fun MonthlyDividendBarChart(monthlyTotals: List<Long>, selectedMonth: In
     Row(
         modifier = Modifier
             .fillMaxWidth()
-            .height(150.dp),
+            .height(158.dp)
+            .appChartFrame()
+            .padding(horizontal = 8.dp, vertical = 8.dp),
         horizontalArrangement = Arrangement.SpaceBetween,
         verticalAlignment = Alignment.Bottom
     ) {
@@ -2682,7 +2842,7 @@ private fun MonthlyDividendBarChart(monthlyTotals: List<Long>, selectedMonth: In
                             .width(28.dp)
                             .height((20f + total.toFloat() / maxValue.toFloat() * 74f).dp)
                             .clip(RoundedCornerShape(6.dp))
-                            .background(if (active) PositiveRed else PositiveRed.copy(alpha = 0.22f))
+                            .background(if (active) ChartIncomeColor else ChartIncomeColor.copy(alpha = 0.26f))
                     )
                 } else {
                     Spacer(modifier = Modifier.height(94.dp))
@@ -2909,7 +3069,10 @@ private fun dividendProjectionInputKey(
     modeIndex: Int,
     targetInput: String,
     people: List<DividendPersonUi>,
-    usdKrw: Double
+    usdKrw: Double,
+    averageDividendYieldPercent: Double,
+    dividendGrowthPercent: Double,
+    priceGrowthPercent: Double
 ): String = buildString {
     append(ticker.uppercase(Locale.US))
     append('|')
@@ -2918,6 +3081,12 @@ private fun dividendProjectionInputKey(
     append(targetInput.filter(Char::isDigit))
     append('|')
     append(usdKrw.toBits())
+    append('|')
+    append(averageDividendYieldPercent.toBits())
+    append('|')
+    append(dividendGrowthPercent.toBits())
+    append('|')
+    append(priceGrowthPercent.toBits())
     people.forEach { person ->
         append('|')
         append(person.id)
@@ -2987,13 +3156,38 @@ private fun DividendSimulationContent(accounts: List<AccountUi>, usdKrw: Double)
         )
     }
     var isUpdatingCharts by remember { mutableStateOf(false) }
+    var fullHistoryRatesByTicker by remember(context) {
+        mutableStateOf(
+            candidates.mapNotNull { candidate ->
+                threeAssetHistoricalRates(context, candidate.ticker)?.let { candidate.ticker to it }
+            }.toMap()
+        )
+    }
+
+    LaunchedEffect(Unit) {
+        val refreshedRates = withContext(Dispatchers.IO) {
+            candidates.mapNotNull { candidate ->
+                refreshThreeAssetHistoricalRates(
+                    context = context,
+                    ticker = candidate.ticker,
+                    includeDividends = true
+                )?.let { candidate.ticker to it }
+            }.toMap()
+        }
+        fullHistoryRatesByTicker = fullHistoryRatesByTicker + refreshedRates
+    }
 
     if (people.isEmpty()) people.addAll(defaultPeople)
     val activePeople = people.toList().ifEmpty { defaultPeople }
     val targetAmount = targetInput.filter { it.isDigit() }.toLongOrNull() ?: 0L
     val selectedChartSnapshot = chartSnapshot?.takeIf { it.ticker.equals(selected.ticker, ignoreCase = true) }
-    val selectedPrice = selectedChartSnapshot?.latestPrice ?: selected.fallbackPrice
-    val selectedYield = selectedChartSnapshot?.dividendYieldPercent ?: selected.yieldRate
+    val selectedFullHistoryRates = fullHistoryRatesByTicker[selected.ticker]
+    val selectedPrice = selectedFullHistoryRates?.latestPrice
+        ?: selectedChartSnapshot?.latestPrice
+        ?: selected.fallbackPrice
+    val selectedYield = selectedFullHistoryRates?.averageDividendYieldPercent
+        ?: selectedChartSnapshot?.averageDividendYieldPercent
+        ?: selected.yieldRate
     val priceKrw = if (selected.currency == "USD") selectedPrice * usdKrw else selectedPrice
     val grossAnnualDividendPerShare = priceKrw * (selectedYield / 100.0)
     val selectedWithholdingTaxRate = dividendWithholdingTaxRate(selected)
@@ -3017,7 +3211,9 @@ private fun DividendSimulationContent(accounts: List<AccountUi>, usdKrw: Double)
     val candidateByTicker = candidates.associateBy { it.ticker.uppercase(Locale.US) }
     val grossDividendProjections = holdings.mapNotNull { holding ->
         val candidate = candidateByTicker[holding.ticker.uppercase(Locale.US)] ?: return@mapNotNull null
-        val grossAnnualDividend = holding.amount * (candidate.yieldRate / 100.0)
+        val averageYield = fullHistoryRatesByTicker[candidate.ticker]?.averageDividendYieldPercent
+            ?: candidate.yieldRate
+        val grossAnnualDividend = holding.amount * (averageYield / 100.0)
         Triple(holding, candidate, grossAnnualDividend)
     }
     val dividendProjections = grossDividendProjections.map { (holding, candidate, grossAnnualDividend) ->
@@ -3026,10 +3222,11 @@ private fun DividendSimulationContent(accounts: List<AccountUi>, usdKrw: Double)
             activePeople,
             dividendWithholdingTaxRate(candidate)
         ).roundToLong()
-        val growthRate = chartSnapshot
-            ?.takeIf { it.ticker.equals(candidate.ticker, ignoreCase = true) }
-            ?.dividendGrowthMetric
-            ?.numericValue
+        val growthRate = fullHistoryRatesByTicker[candidate.ticker]?.dividendGrowthCagrPercent
+            ?: chartSnapshot
+                ?.takeIf { it.ticker.equals(candidate.ticker, ignoreCase = true) }
+                ?.dividendGrowthMetric
+                ?.numericValue
             ?: candidate.dividendGrowth5y
         val fiveYearAnnualDividend = (annualDividend * (1.0 + growthRate / 100.0).pow(5.0)).roundToLong()
         DividendHoldingProjection(
@@ -3047,16 +3244,14 @@ private fun DividendSimulationContent(accounts: List<AccountUi>, usdKrw: Double)
         1 -> targetAmount / 12
         else -> expectedMonthlyDividend
     }
-    val displayedDividendGrowthMetric = selectedChartSnapshot?.dividendGrowthMetric ?: DividendMetricUi(
-        label = "평균 배당성장율",
-        value = "${formatDecimal(selected.dividendGrowth5y)}%",
-        numericValue = selected.dividendGrowth5y
-    )
-    val displayedPriceGrowthMetric = selectedChartSnapshot?.priceGrowthMetric ?: DividendMetricUi(
-        label = "평균 가격성장률",
-        value = "${formatDecimal(selected.priceGrowth10y)}%",
-        numericValue = selected.priceGrowth10y
-    )
+    val displayedDividendGrowthMetric = dividendGrowthMetric(selected, selectedFullHistoryRates)
+        .takeIf { selectedFullHistoryRates != null }
+        ?: selectedChartSnapshot?.dividendGrowthMetric
+        ?: dividendGrowthMetric(selected, null)
+    val displayedPriceGrowthMetric = dividendPriceGrowthMetric(selected, selectedFullHistoryRates)
+        .takeIf { selectedFullHistoryRates != null }
+        ?: selectedChartSnapshot?.priceGrowthMetric
+        ?: dividendPriceGrowthMetric(selected, null)
     val chartCandidate = chartSnapshot?.let { snapshot ->
         candidates.firstOrNull { it.ticker.equals(snapshot.ticker, ignoreCase = true) }
     }
@@ -3065,7 +3260,10 @@ private fun DividendSimulationContent(accounts: List<AccountUi>, usdKrw: Double)
         modeIndex = modeIndex,
         targetInput = targetInput,
         people = activePeople,
-        usdKrw = usdKrw
+        usdKrw = usdKrw,
+        averageDividendYieldPercent = selectedYield,
+        dividendGrowthPercent = displayedDividendGrowthMetric.numericValue ?: 0.0,
+        priceGrowthPercent = displayedPriceGrowthMetric.numericValue ?: 0.0
     )
     val currentProjectionRows = chartSnapshot
         ?.takeIf { it.inputKey == currentProjectionInputKey }
@@ -3136,11 +3334,16 @@ private fun DividendSimulationContent(accounts: List<AccountUi>, usdKrw: Double)
             isUpdatingCharts = true
             try {
                 val updated = withContext(Dispatchers.IO) {
-                    val annualRates = refreshHistoricalAnnualRates(context, candidate.ticker)
-                    val updatedDividendGrowthMetric = dividendGrowthMetric(context, candidate)
-                    val updatedPriceGrowthMetric = dividendPriceGrowthMetric(context, candidate)
+                    refreshHistoricalAnnualRates(context, candidate.ticker)
+                    val annualRates = refreshThreeAssetHistoricalRates(
+                        context = context,
+                        ticker = candidate.ticker,
+                        includeDividends = true
+                    )
+                    val updatedDividendGrowthMetric = dividendGrowthMetric(candidate, annualRates)
+                    val updatedPriceGrowthMetric = dividendPriceGrowthMetric(candidate, annualRates)
                     val latestPrice = annualRates?.latestPrice ?: candidate.fallbackPrice
-                    val dividendYield = annualRates?.dividendYieldPercent ?: candidate.yieldRate
+                    val dividendYield = annualRates?.averageDividendYieldPercent ?: candidate.yieldRate
                     val latestPriceWon = if (candidate.currency == "USD") latestPrice * usdKrw else latestPrice
                     val grossDividendPerShare = latestPriceWon * dividendYield / 100.0
                     val shares = when (modeSnapshot) {
@@ -3178,7 +3381,7 @@ private fun DividendSimulationContent(accounts: List<AccountUi>, usdKrw: Double)
                         ticker = candidate.ticker,
                         targetMonthlyDividend = updatedMonthlyTarget,
                         latestPrice = latestPrice,
-                        dividendYieldPercent = dividendYield,
+                        averageDividendYieldPercent = dividendYield,
                         dividendGrowthMetric = updatedDividendGrowthMetric,
                         priceGrowthMetric = updatedPriceGrowthMetric,
                         pricePoints = dividendPriceChartPoints(context, candidate),
@@ -3230,24 +3433,37 @@ private fun DividendSimulationContent(accounts: List<AccountUi>, usdKrw: Double)
         )
     }
     Spacer(modifier = Modifier.height(12.dp))
-    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-        candidates.chunked(2).forEach { row ->
-            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                row.forEach { candidate ->
-                    Column(
-                        modifier = Modifier
-                            .weight(1f)
-                            .clip(RoundedCornerShape(16.dp))
-                            .background(if (candidate.ticker == selected.ticker) BrandSoftBlue.copy(alpha = 0.28f) else SoftSurface)
-                            .clickable { selected = candidate }
-                            .padding(14.dp)
-                    ) {
-                        Text(candidate.ticker, color = TextPrimary, fontSize = 16.sp, fontWeight = FontWeight.ExtraBold)
-                        Spacer(modifier = Modifier.height(4.dp))
-                        Text("${formatDecimal(candidate.yieldRate)}% · ${candidate.currency}", color = TextSecondary, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+    BoxWithConstraints(modifier = Modifier.fillMaxWidth()) {
+        val columns = if (maxWidth >= 720.dp) 3 else 2
+        Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            candidates.chunked(columns).forEach { row ->
+                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    row.forEach { candidate ->
+                        val candidateAverageYield = fullHistoryRatesByTicker[candidate.ticker]
+                            ?.averageDividendYieldPercent
+                            ?: candidate.yieldRate
+                        Column(
+                            modifier = Modifier
+                                .weight(1f)
+                                .clip(RoundedCornerShape(16.dp))
+                                .background(if (candidate.ticker == selected.ticker) BrandSoftBlue.copy(alpha = 0.28f) else SoftSurface)
+                                .clickable { selected = candidate }
+                                .padding(14.dp)
+                        ) {
+                            Text(candidate.ticker, color = TextPrimary, fontSize = 16.sp, fontWeight = FontWeight.ExtraBold)
+                            Spacer(modifier = Modifier.height(4.dp))
+                            Text(
+                                "상장 후 평균 ${formatDecimal(candidateAverageYield)}% · ${candidate.currency}",
+                                color = TextSecondary,
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.Bold,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
                     }
+                    repeat(columns - row.size) { Spacer(modifier = Modifier.weight(1f)) }
                 }
-                if (row.size == 1) Spacer(modifier = Modifier.weight(1f))
             }
         }
     }
@@ -3271,17 +3487,16 @@ private fun DividendSimulationContent(accounts: List<AccountUi>, usdKrw: Double)
             }
         }
         Spacer(modifier = Modifier.height(18.dp))
-        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-            DividendInfoBlock("현재가", if (selected.currency == "USD") "$${formatDecimal(selected.fallbackPrice)}" else formatWon(priceKrw.roundToLong()))
-            DividendInfoBlock("배당수익률", "${formatDecimal(selected.yieldRate)}%")
-            DividendInfoBlock("배당주기", selected.frequency)
-        }
-        Spacer(modifier = Modifier.height(14.dp))
-        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-            DividendInfoBlock(displayedDividendGrowthMetric.label, displayedDividendGrowthMetric.value)
-            DividendInfoBlock(displayedPriceGrowthMetric.label, displayedPriceGrowthMetric.value)
-            DividendInfoBlock("보유 월 배당", formatWon(ownedMonthlyDividend))
-        }
+        DividendInfoGrid(
+            listOf(
+                "현재가" to if (selected.currency == "USD") "$${formatDecimal(selectedPrice)}" else formatWon(priceKrw.roundToLong()),
+                "상장 후 평균 배당률" to "${formatDecimal(selectedYield)}%",
+                "배당주기" to selected.frequency,
+                displayedDividendGrowthMetric.label to displayedDividendGrowthMetric.value,
+                displayedPriceGrowthMetric.label to displayedPriceGrowthMetric.value,
+                "보유 월 배당" to formatWon(ownedMonthlyDividend)
+            )
+        )
     }
 
     Spacer(modifier = Modifier.height(18.dp))
@@ -3657,11 +3872,35 @@ private fun DividendSimulationContent(accounts: List<AccountUi>, usdKrw: Double)
 }
 
 @Composable
-private fun DividendInfoBlock(label: String, value: String) {
-    Column {
+private fun DividendInfoGrid(items: List<Pair<String, String>>) {
+    BoxWithConstraints(modifier = Modifier.fillMaxWidth()) {
+        val columns = if (maxWidth < 520.dp) 2 else 3
+        Column(modifier = Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(14.dp)) {
+            items.chunked(columns).forEach { rowItems ->
+                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                    rowItems.forEach { (label, value) ->
+                        DividendInfoBlock(label, value, Modifier.weight(1f))
+                    }
+                    repeat(columns - rowItems.size) { Spacer(modifier = Modifier.weight(1f)) }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun DividendInfoBlock(label: String, value: String, modifier: Modifier = Modifier) {
+    Column(modifier = modifier) {
         Text(label, color = TextSecondary, fontSize = 12.sp, fontWeight = FontWeight.Bold)
         Spacer(modifier = Modifier.height(5.dp))
-        Text(value, color = TextPrimary, fontSize = 15.sp, fontWeight = FontWeight.ExtraBold)
+        Text(
+            value,
+            color = TextPrimary,
+            fontSize = 15.sp,
+            fontWeight = FontWeight.ExtraBold,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis
+        )
     }
 }
 
@@ -3815,7 +4054,6 @@ private fun DividendPriceChart(candidate: DividendEtfUi, points: List<Pair<Local
 
     val values = points.map { it.second }
     val labels = points.map { dividendChartDateLabel(it.first) }
-    val up = values.last() >= values.first()
     Column {
         Text(
             "${dividendChartFullDate(points.first().first)} ~ ${dividendChartFullDate(points.last().first)}",
@@ -3828,8 +4066,7 @@ private fun DividendPriceChart(candidate: DividendEtfUi, points: List<Pair<Local
             modifier = Modifier
                 .fillMaxWidth()
                 .height(246.dp)
-                .clip(RoundedCornerShape(16.dp))
-                .background(SoftSurface)
+                .appChartFrame()
                 .padding(8.dp)
                 .pointerInput(values) {
                     detectTapGestures { offset ->
@@ -3844,7 +4081,7 @@ private fun DividendPriceChart(candidate: DividendEtfUi, points: List<Pair<Local
             DetailedBacktestLineChart(
                 values = values,
                 labels = labels,
-                color = if (up) PositiveRed else NegativeBlue,
+                color = ChartActualColor,
                 yAxisLabel = { dividendPriceLabel(candidate, it) },
                 chartType = BacktestChartType.PRICE,
                 selectedIndex = selectedIndex,
@@ -3876,7 +4113,6 @@ private fun DividendGrowthChart(
 
     val values = points.map { it.second }
     val labels = points.map { dividendChartDateLabel(it.first) }
-    val up = values.last() >= values.first()
     Column {
         Text(
             "${dividendChartFullDate(points.first().first)} ~ ${dividendChartFullDate(points.last().first)}",
@@ -3889,8 +4125,7 @@ private fun DividendGrowthChart(
             modifier = Modifier
                 .fillMaxWidth()
                 .height(246.dp)
-                .clip(RoundedCornerShape(16.dp))
-                .background(SoftSurface)
+                .appChartFrame()
                 .padding(8.dp)
                 .pointerInput(values) {
                     detectTapGestures { offset ->
@@ -3905,7 +4140,7 @@ private fun DividendGrowthChart(
             DetailedBacktestLineChart(
                 values = values,
                 labels = labels,
-                color = if (up) PositiveRed else NegativeBlue,
+                color = ChartIncomeColor,
                 yAxisLabel = { formatWon(it.roundToLong()) },
                 chartType = BacktestChartType.PRICE,
                 selectedIndex = selectedIndex,
@@ -3923,8 +4158,7 @@ private fun DividendEmptyChart(message: String) {
         modifier = Modifier
             .fillMaxWidth()
             .height(226.dp)
-            .clip(RoundedCornerShape(16.dp))
-            .background(SoftSurface)
+            .appChartFrame()
             .padding(16.dp),
         contentAlignment = Alignment.Center
     ) {
@@ -4047,23 +4281,27 @@ private fun dividendChartDateLabel(date: LocalDate): String =
 private fun dividendChartFullDate(date: LocalDate): String =
     "${date.year}.${date.monthValue.toString().padStart(2, '0')}.${date.dayOfMonth.toString().padStart(2, '0')}"
 
-private fun dividendGrowthMetric(context: Context, candidate: DividendEtfUi): DividendMetricUi {
-    val rates = historicalAnnualRates(context, candidate.ticker)
+private fun dividendGrowthMetric(
+    candidate: DividendEtfUi,
+    rates: ThreeAssetHistoricalRates?
+): DividendMetricUi {
     val value = rates?.dividendGrowthCagrPercent
         ?: candidate.dividendGrowth5y.takeIf { it != 0.0 }
     return DividendMetricUi(
-        label = rates?.dividendStartDate?.let { "상장 후 배당성장률" } ?: "평균 배당성장율",
+        label = if (rates != null) "상장 후 연평균 배당성장률" else "평균 배당성장률",
         value = value?.let { "${formatDecimal(it)}%" } ?: "분배금 데이터 부족",
         numericValue = value
     )
 }
 
-private fun dividendPriceGrowthMetric(context: Context, candidate: DividendEtfUi): DividendMetricUi {
-    val rates = historicalAnnualRates(context, candidate.ticker)
-    val value = rates?.priceCagrPercent
+private fun dividendPriceGrowthMetric(
+    candidate: DividendEtfUi,
+    rates: ThreeAssetHistoricalRates?
+): DividendMetricUi {
+    val value = rates?.priceOnlyCagrPercent
         ?: candidate.priceGrowth10y.takeIf { it != 0.0 }
     return DividendMetricUi(
-        label = if (rates != null) "상장 후 연환산 주가상승률" else "평균 주가상승율",
+        label = if (rates != null) "상장 후 연평균 주가상승률" else "평균 주가상승률",
         value = value?.let { "${formatDecimal(it)}%" } ?: "2년 미만",
         numericValue = value
     )
@@ -4101,23 +4339,33 @@ private fun TrendAnalysisContent(accounts: List<AccountUi>) {
 
     Text("투자 자산", color = TextPrimary, fontSize = 24.sp, fontWeight = FontWeight.ExtraBold)
     Spacer(modifier = Modifier.height(10.dp))
-    Text(formatWon(totalAmount), color = portfolioAmountColor(formatWon(totalAmount), TextPrimary), fontSize = 38.sp, fontWeight = FontWeight.ExtraBold)
+    Text(formatWon(totalAmount), color = portfolioAmountColor(formatWon(totalAmount), TextPrimary), fontSize = 38.sp, fontWeight = FontWeight.ExtraBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
     Spacer(modifier = Modifier.height(12.dp))
     Text("원금 ${formatWon(principal)}", color = TextPrimary, fontSize = 19.sp, fontWeight = FontWeight.Bold)
     Spacer(modifier = Modifier.height(28.dp))
     TrendAssetChart(holdings, selectedRange)
     Spacer(modifier = Modifier.height(20.dp))
-    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-        listOf("올해", "이달", "1달", "6달", "1년", "5년", "10년", "15년", "20년").forEachIndexed { index, label ->
-            Text(
-                label,
-                color = if (selectedRange == index) Color.White else TextPrimary,
-                fontSize = 17.sp,
-                fontWeight = FontWeight.Bold,
-                modifier = (if (selectedRange == index) Modifier.clip(CircleShape).background(PositiveRed) else Modifier)
-                    .clickable { selectedRange = index }
-                    .padding(horizontal = 12.dp, vertical = 10.dp)
-            )
+    BoxWithConstraints(modifier = Modifier.fillMaxWidth()) {
+        val compact = maxWidth < 720.dp
+        Row(
+            modifier = if (compact) {
+                Modifier.fillMaxWidth().horizontalScroll(rememberScrollState())
+            } else {
+                Modifier.fillMaxWidth()
+            },
+            horizontalArrangement = if (compact) Arrangement.spacedBy(4.dp) else Arrangement.SpaceBetween
+        ) {
+            listOf("올해", "이달", "1달", "6달", "1년", "5년", "10년", "15년", "20년").forEachIndexed { index, label ->
+                Text(
+                    label,
+                    color = if (selectedRange == index) Color.White else TextPrimary,
+                    fontSize = 16.sp,
+                    fontWeight = FontWeight.Bold,
+                    modifier = (if (selectedRange == index) Modifier.clip(CircleShape).background(PositiveRed) else Modifier)
+                        .clickable { selectedRange = index }
+                        .padding(horizontal = 11.dp, vertical = 9.dp)
+                )
+            }
         }
     }
     Spacer(modifier = Modifier.height(20.dp))
@@ -4212,7 +4460,7 @@ private fun SegmentedLabels(labels: List<String>, selectedIndex: Int, onSelect: 
 
 @Composable
 private fun ProfitBarLineChart() {
-    Canvas(modifier = Modifier.fillMaxWidth().height(190.dp).padding(top = 20.dp)) {
+    Canvas(modifier = Modifier.fillMaxWidth().height(190.dp).appChartFrame().padding(top = 20.dp)) {
         val left = 28f
         val right = size.width - 18f
         val top = 18f
@@ -4221,16 +4469,14 @@ private fun ProfitBarLineChart() {
         val maxAbs = 14f
         val zeroY = top + (bottom - top) * 0.46f
 
-        listOf(top, zeroY, bottom).forEach { y ->
-            drawLine(Color(0xFFE6EAF0), Offset(left, y), Offset(right, y), strokeWidth = 1.5f)
-        }
+        drawAppChartGrid(left, right, top, bottom, horizontalLines = 4)
 
         values.forEachIndexed { index, value ->
             val x = left + (right - left) * (index + 1) / 12f
             val barHeight = (kotlin.math.abs(value) / maxAbs) * (bottom - top) * 0.5f
             val y = if (value >= 0) zeroY - barHeight else zeroY
             drawRoundRect(
-                color = Color(0xFFE8ECF2),
+                color = if (value >= 0f) PositiveRed.copy(alpha = 0.24f) else NegativeBlue.copy(alpha = 0.24f),
                 topLeft = Offset(x - 10f, y),
                 size = androidx.compose.ui.geometry.Size(20f, barHeight),
                 cornerRadius = androidx.compose.ui.geometry.CornerRadius(8f, 8f)
@@ -4242,7 +4488,7 @@ private fun ProfitBarLineChart() {
             val x = left + (right - left) * (index + 1) / 12f
             val y = zeroY - (value / maxAbs) * (bottom - top) * 0.5f
             val point = Offset(x, y)
-            prev?.let { drawLine(NegativeBlue, it, point, strokeWidth = 4f, cap = StrokeCap.Round) }
+            prev?.let { drawLine(ChartActualColor, it, point, strokeWidth = ChartSeriesStrokeWidth, cap = StrokeCap.Round) }
             prev = point
         }
     }
@@ -4269,16 +4515,23 @@ private fun TrendAssetChart(holdings: List<HoldingUi>, selectedRange: Int) {
     val startLabel = chartTrades.firstOrNull()?.first?.let { "${it.monthValue}/${it.dayOfMonth}" } ?: "-"
     val endDate = LocalDate.now()
 
-    Canvas(modifier = Modifier.fillMaxWidth().height(260.dp)) {
-        val left = 4f
+    Row(
+        modifier = Modifier.fillMaxWidth().padding(bottom = 8.dp),
+        horizontalArrangement = Arrangement.Center
+    ) {
+        AppChartLegendItem("총 자산", ChartActualColor)
+        Spacer(modifier = Modifier.width(16.dp))
+        AppChartLegendItem("투자 원금", TextSecondary.copy(alpha = 0.58f))
+    }
+    Canvas(modifier = Modifier.fillMaxWidth().height(260.dp).appChartFrame()) {
+        val left = 12f
         val right = size.width - 8f
         val top = 24f
         val bottom = size.height - 34f
         val principalPointsRaw = chartTrades.runningFold(0L) { acc, item -> acc + item.second }.drop(1).ifEmpty { listOf(0L) }
         val maxValue = maxOf(totalAmount, principalPointsRaw.maxOrNull() ?: 0L, 1L).toFloat()
 
-        drawLine(Color(0xFFE3E7EC), Offset(left, bottom), Offset(right, bottom), strokeWidth = 1.5f)
-        drawLine(Color(0xFFE3E7EC), Offset(left, top), Offset(right, top), strokeWidth = 1.5f)
+        drawAppChartGrid(left, right, top, bottom, horizontalLines = 4)
 
         fun yFor(value: Long): Float = bottom - (bottom - top) * (value.toFloat() / maxValue).coerceIn(0f, 1f)
 
@@ -4294,9 +4547,9 @@ private fun TrendAssetChart(holdings: List<HoldingUi>, selectedRange: Int) {
             }
         }
 
-        drawSeries(principalPointsRaw, Color(0xFFC7CED8), 5f)
+        drawSeries(principalPointsRaw, TextSecondary.copy(alpha = 0.58f), ChartSeriesStrokeWidth)
         val assetPoints = if (principalPointsRaw.size <= 1) listOf(principalPointsRaw.firstOrNull() ?: 0L, totalAmount) else principalPointsRaw.dropLast(1) + totalAmount
-        drawSeries(assetPoints, PositiveRed, 5f)
+        drawSeries(assetPoints, ChartActualColor, ChartSeriesStrokeWidth)
     }
     Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
         Text(startLabel, color = TextSecondary, fontSize = 11.sp)
@@ -4307,10 +4560,20 @@ private fun TrendAssetChart(holdings: List<HoldingUi>, selectedRange: Int) {
 @Composable
 private fun DonutChart(parts: List<Pair<Float, Color>>) {
     val total = parts.sumOf { it.first.toDouble() }.toFloat().coerceAtLeast(1f)
-    Canvas(modifier = Modifier.fillMaxWidth().height(250.dp)) {
+    Canvas(modifier = Modifier.fillMaxWidth().height(250.dp).appChartFrame()) {
         val diameter = size.minDimension * 0.78f
         val left = (size.width - diameter) / 2f
         val top = (size.height - diameter) / 2f
+        val strokeWidth = diameter * 0.27f
+        drawArc(
+            color = chartGridColor(),
+            startAngle = -90f,
+            sweepAngle = 360f,
+            useCenter = false,
+            topLeft = Offset(left, top),
+            size = androidx.compose.ui.geometry.Size(diameter, diameter),
+            style = androidx.compose.ui.graphics.drawscope.Stroke(width = strokeWidth)
+        )
         var startAngle = -90f
         parts.forEach { (value, color) ->
             val sweep = 360f * value / total
@@ -4321,7 +4584,7 @@ private fun DonutChart(parts: List<Pair<Float, Color>>) {
                 useCenter = false,
                 topLeft = Offset(left, top),
                 size = androidx.compose.ui.geometry.Size(diameter, diameter),
-                style = androidx.compose.ui.graphics.drawscope.Stroke(width = diameter * 0.27f)
+                style = androidx.compose.ui.graphics.drawscope.Stroke(width = strokeWidth)
             )
             startAngle += sweep
         }
@@ -4473,13 +4736,14 @@ private fun DeleteManualAccountsScreen(
     onBack: () -> Unit,
     onDeleteClick: () -> Unit
 ) {
-    Box(modifier = Modifier.fillMaxSize().background(AppBackground)) {
-        Column(modifier = Modifier.fillMaxSize()) {
+    BoxWithConstraints(modifier = Modifier.fillMaxSize().background(AppBackground)) {
+        val horizontalPadding = responsiveHorizontalPadding(maxWidth)
+        Column(modifier = Modifier.align(Alignment.TopCenter).widthIn(max = ResponsiveContentMaxWidth).fillMaxSize()) {
             Column(
                 modifier = Modifier
                     .weight(1f)
                     .verticalScroll(rememberScrollState())
-                    .padding(start = 24.dp, top = 76.dp, end = 24.dp, bottom = 54.dp)
+                    .padding(start = horizontalPadding, top = 76.dp, end = horizontalPadding, bottom = 54.dp)
             ) {
                 PlainTopBar(title = "계좌 삭제", onBack = onBack, rightText = "저장", onRightClick = onDeleteClick)
                 Spacer(modifier = Modifier.height(22.dp))
@@ -4498,7 +4762,7 @@ private fun DeleteManualAccountsScreen(
                     .fillMaxWidth()
                     .height(104.dp)
                     .background(PanelColor)
-                    .padding(start = 36.dp, top = 12.dp, end = 36.dp, bottom = 26.dp),
+                    .padding(start = horizontalPadding, top = 12.dp, end = horizontalPadding, bottom = 26.dp),
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.SpaceBetween
             ) {
@@ -4719,6 +4983,7 @@ private fun SettingsScreen(
     onDisplayModeClick: () -> Unit,
     onFeatureGuideClick: () -> Unit,
     onCurrencyChange: (String) -> Unit,
+    onSimulatorCurrencyChange: (String) -> Unit,
     onApiSettingsSave: (AppSettings) -> Unit,
     onProtectionSettingsChange: (ProtectionSettings) -> Unit,
     onRequestQrScan: (((String?) -> Unit) -> Unit),
@@ -4728,6 +4993,7 @@ private fun SettingsScreen(
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     var showCurrencySheet by remember { mutableStateOf(false) }
+    var showSimulatorCurrencySheet by remember { mutableStateOf(false) }
     var showApiSheet by remember { mutableStateOf(false) }
     var showManualAssetSheet by remember { mutableStateOf(false) }
     var manualAssetVersion by remember { mutableIntStateOf(0) }
@@ -4790,6 +5056,11 @@ private fun SettingsScreen(
             title = "통화 설정",
             value = currencyLabel(settings.currency),
             onClick = { showCurrencySheet = true }
+        )
+        SettingsValueRow(
+            title = "시뮬레이터 통화 설정",
+            value = currencyLabel(settings.simulatorCurrency),
+            onClick = { showSimulatorCurrencySheet = true }
         )
 
         Spacer(modifier = Modifier.height(46.dp))
@@ -4879,10 +5150,29 @@ private fun SettingsScreen(
             shape = RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp)
         ) {
             CurrencySettingsSheet(
+                title = "통화 설정",
                 selectedCurrency = settings.currency,
                 onSelect = {
                     onCurrencyChange(it)
                     showCurrencySheet = false
+                }
+            )
+        }
+    }
+
+    if (showSimulatorCurrencySheet) {
+        ModalBottomSheet(
+            onDismissRequest = { showSimulatorCurrencySheet = false },
+            sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true),
+            containerColor = PanelColor,
+            shape = RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp)
+        ) {
+            CurrencySettingsSheet(
+                title = "시뮬레이터 통화 설정",
+                selectedCurrency = settings.simulatorCurrency,
+                onSelect = {
+                    onSimulatorCurrencyChange(it)
+                    showSimulatorCurrencySheet = false
                 }
             )
         }
@@ -5116,6 +5406,7 @@ private fun ProtectionModeSettingsSheet(
             Spacer(modifier = Modifier.height(22.dp))
         }
     }
+
 }
 
 @Composable
@@ -5258,15 +5549,17 @@ private fun AppProtectionLockScreen(
         PortfolioReviewStatus(today, portfolioReviewStatus.completedMonth)
     }
 
-    Box(
+    BoxWithConstraints(
         modifier = Modifier.fillMaxSize().background(AppBackground),
         contentAlignment = Alignment.Center
     ) {
+        val horizontalPadding = responsiveHorizontalPadding(maxWidth)
         Column(
             modifier = Modifier
+                .widthIn(max = 600.dp)
                 .fillMaxWidth()
                 .verticalScroll(rememberScrollState())
-                .padding(horizontal = 28.dp, vertical = 42.dp),
+                .padding(horizontal = horizontalPadding, vertical = 42.dp),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
             Text("잠시 멈춤", color = TextPrimary, fontSize = 30.sp, fontWeight = FontWeight.ExtraBold)
@@ -6002,7 +6295,7 @@ private fun FeatureGuideScreen(onBack: () -> Unit) {
             items = listOf(
                 "백테스트" to "과거 데이터로 자산 비중, 적립 투자, 리밸런싱과 배당 재투입 조건을 적용해 자산 성장과 연도별 수익을 확인합니다.",
                 "배당" to "배당 ETF의 목표 월·연 배당금에 필요한 수량과 투자금을 계산하고 인원별 세금, 배당 성장 차트와 20년 월평균 배당표를 확인합니다.",
-                "자가배당" to "보유 자산을 매도해 세후 인출 목표를 만드는 흐름을 계산합니다. 해외주식 실현차익, 연 250만원 기본공제와 양도세를 반영합니다.",
+                "자가배당" to "세후 배당으로 생활비를 먼저 채우고 부족분만 매월 매도합니다. 배당소득세·건보료·종소세와 해외주식 양도세를 반영합니다.",
                 "배당+성장" to "원하는 종목을 직접 추가해 비중과 생활비를 설정하고, 20년 자산 흐름·세전/세후 배당·하락장 스트레스 결과를 계산합니다.",
                 "시나리오 비교" to "저장한 배당·자가배당·배당+성장 시나리오를 함께 선택해 월 현금흐름, 총 자산, 역산 연수익률, 과거 변동성과 최대 낙폭을 비교합니다."
             )
@@ -6038,7 +6331,7 @@ private fun FeatureGuideScreen(onBack: () -> Unit) {
             title = "설정과 데이터",
             color = PsuOrange,
             items = listOf(
-                "화면과 통화" to "시스템·밝은·어두운 화면 모드와 원화·달러 표시 방식을 선택합니다.",
+                "화면과 통화" to "시스템·밝은·어두운 화면 모드와 일반 화면·시뮬레이터의 원화·달러 표시 방식을 각각 선택합니다.",
                 "종목과 API" to "수동 종목을 추가하고 한국투자·키움 API를 설정해 시세와 과거 가격 데이터를 갱신합니다.",
                 "데이터 다운로드" to "보유 종목과 시뮬레이션 종목의 가격·배당 데이터를 기기에 저장해 과거 데이터 기반 계산에 사용합니다.",
                 "백업과 복원" to "계좌, 거래내역, 목표, 저장 시뮬레이션과 다운로드 데이터를 파일로 저장하고 Google Drive 등에서 다시 불러옵니다."
@@ -6189,6 +6482,7 @@ private fun DisplayModePreview(mode: String) {
 
 @Composable
 private fun CurrencySettingsSheet(
+    title: String,
     selectedCurrency: String,
     onSelect: (String) -> Unit
 ) {
@@ -6206,7 +6500,7 @@ private fun CurrencySettingsSheet(
                 .background(Color(0xFFE8EAED))
         )
         Spacer(modifier = Modifier.height(26.dp))
-        Text("통화 설정", color = TextPrimary, fontSize = 27.sp, fontWeight = FontWeight.ExtraBold)
+        Text(title, color = TextPrimary, fontSize = 27.sp, fontWeight = FontWeight.ExtraBold)
         Spacer(modifier = Modifier.height(12.dp))
         Text("자산 및 수익을 선택한 통화로 변경합니다. 현재 환율 기준입니다.", color = TextSecondary, fontSize = 16.sp, lineHeight = 23.sp)
         Spacer(modifier = Modifier.height(28.dp))
@@ -6257,8 +6551,17 @@ private fun SettingsValueRow(title: String, value: String, onClick: () -> Unit) 
             .padding(vertical = 17.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        Text(title, color = TextPrimary, fontSize = 22.sp, fontWeight = FontWeight.ExtraBold, modifier = Modifier.weight(1f))
-        Text(value, color = NegativeBlue, fontSize = 20.sp, fontWeight = FontWeight.Bold)
+        Text(
+            title,
+            color = TextPrimary,
+            fontSize = 22.sp,
+            fontWeight = FontWeight.ExtraBold,
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.weight(1f)
+        )
+        Spacer(modifier = Modifier.width(12.dp))
+        Text(value, color = NegativeBlue, fontSize = 20.sp, fontWeight = FontWeight.Bold, maxLines = 1)
         Spacer(modifier = Modifier.width(8.dp))
         Text("›", color = MutedText, fontSize = 30.sp)
     }
@@ -6272,7 +6575,8 @@ private fun SettingsActionRow(title: String, actionText: String, enabled: Boolea
             .padding(vertical = 17.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        Text(title, color = TextPrimary, fontSize = 22.sp, fontWeight = FontWeight.ExtraBold, modifier = Modifier.weight(1f))
+        Text(title, color = TextPrimary, fontSize = 22.sp, fontWeight = FontWeight.ExtraBold, maxLines = 2, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1f))
+        Spacer(modifier = Modifier.width(12.dp))
         Text(
             actionText,
             color = if (enabled) BrandGreen else MutedText,
@@ -6326,6 +6630,7 @@ private fun AccountDrawer(
         drawerContainerColor = AppBackground,
         modifier = Modifier
             .fillMaxHeight()
+            .widthIn(max = 420.dp)
             .fillMaxWidth(0.86f)
     ) {
         Column(
@@ -6573,7 +6878,10 @@ private fun AddAssetScreen(account: AccountUi?, asset: AssetOption, usdKrw: Doub
             }
         }
         Spacer(modifier = Modifier.height(26.dp))
-        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+        Row(
+            modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+            horizontalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
             InfoChip(account.name)
             if (priceCurrency == "USD" && !isKoreanTicker(asset.ticker)) {
                 InfoChip("${formatDecimal(usdKrw)}원")
@@ -6625,12 +6933,15 @@ private fun HoldingDetailScreen(
         holding.trades.sortedByDescending { it.id }
     }).filterNot { it.id in deletedTradeIds }
 
-    Box(modifier = Modifier.fillMaxSize().background(AppBackground)) {
+    BoxWithConstraints(modifier = Modifier.fillMaxSize().background(AppBackground)) {
+        val horizontalPadding = responsiveHorizontalPadding(maxWidth)
         Column(
             modifier = Modifier
+                .align(Alignment.TopCenter)
+                .widthIn(max = ResponsiveContentMaxWidth)
                 .fillMaxSize()
                 .verticalScroll(rememberScrollState())
-                .padding(start = 24.dp, top = 68.dp, end = 24.dp, bottom = 180.dp)
+                .padding(start = horizontalPadding, top = 68.dp, end = horizontalPadding, bottom = 180.dp)
         ) {
             Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                 Text("⌄", color = TextPrimary, fontSize = 36.sp, modifier = Modifier.clickable(onClick = onBack))
@@ -6707,9 +7018,10 @@ private fun HoldingDetailScreen(
             Row(
                 modifier = Modifier
                     .align(Alignment.BottomCenter)
+                    .widthIn(max = ResponsiveContentMaxWidth)
                     .fillMaxWidth()
                     .background(AppBackground)
-                    .padding(start = 24.dp, top = 18.dp, end = 24.dp, bottom = 58.dp),
+                    .padding(start = horizontalPadding, top = 18.dp, end = horizontalPadding, bottom = 58.dp),
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically
             ) {
@@ -6737,9 +7049,10 @@ private fun HoldingDetailScreen(
         } else Row(
             modifier = Modifier
                 .align(Alignment.BottomCenter)
+                .widthIn(max = ResponsiveContentMaxWidth)
                 .fillMaxWidth()
                 .background(AppBackground)
-                .padding(start = 24.dp, top = 18.dp, end = 24.dp, bottom = 58.dp),
+                .padding(start = horizontalPadding, top = 18.dp, end = horizontalPadding, bottom = 58.dp),
             horizontalArrangement = Arrangement.spacedBy(12.dp)
         ) {
             Button(
@@ -6862,7 +7175,10 @@ private fun TradeAssetScreen(
             }
         }
         Spacer(modifier = Modifier.height(26.dp))
-        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+        Row(
+            modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+            horizontalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
             InfoChip(account.name)
             if (priceCurrency == "USD" && !isKoreanTicker(holding.ticker)) {
                 InfoChip("${formatDecimal(usdKrw)}원")
@@ -6890,8 +7206,9 @@ private fun TradeAssetScreen(
 @Composable
 private fun DetailMetricRow(label: String, value: String) {
     Row(modifier = Modifier.fillMaxWidth().padding(vertical = 13.dp), verticalAlignment = Alignment.CenterVertically) {
-        Text(label, color = TextSecondary, fontSize = 18.sp, modifier = Modifier.weight(1f))
-        Text(value, color = portfolioAmountColor(value, TextPrimary), fontSize = 20.sp, fontWeight = FontWeight.Bold, textAlign = TextAlign.End)
+        Text(label, color = TextSecondary, fontSize = 18.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(0.8f))
+        Spacer(modifier = Modifier.width(10.dp))
+        Text(value, color = portfolioAmountColor(value, TextPrimary), fontSize = 20.sp, fontWeight = FontWeight.Bold, textAlign = TextAlign.End, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1.2f))
     }
 }
 
@@ -6909,36 +7226,40 @@ private fun TradeHistoryRow(
     onLongClick: (() -> Unit)? = null
 ) {
     val color = if (profit < 0) NegativeBlue else PositiveRed
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .combinedClickable(onClick = onClick, onLongClick = onLongClick)
-            .padding(vertical = 12.dp),
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        if (editMode) {
-            SelectionCircle(selected)
-            Spacer(modifier = Modifier.width(12.dp))
-        }
-        Text(date, color = TextSecondary, fontSize = 16.sp, modifier = Modifier.width(70.dp))
-        Box(modifier = Modifier.size(36.dp).clip(CircleShape).background(SoftSurface), contentAlignment = Alignment.Center) {
-            Text("›", color = TextSecondary, fontSize = 18.sp, fontWeight = FontWeight.Bold)
-        }
-        Spacer(modifier = Modifier.width(18.dp))
-        Column(modifier = Modifier.weight(1f)) {
-            Text(title, color = TextPrimary, fontSize = 19.sp, fontWeight = FontWeight.Bold)
-            Text(caption, color = TextSecondary, fontSize = 15.sp)
-        }
-        Column(horizontalAlignment = Alignment.End) {
-            Text(amount, color = portfolioAmountColor(amount, TextPrimary), fontSize = 18.sp, fontWeight = FontWeight.ExtraBold)
-            Text(formatPercent(rate), color = color, fontSize = 14.sp, fontWeight = FontWeight.Bold)
+    BoxWithConstraints(modifier = Modifier.fillMaxWidth()) {
+        val compact = maxWidth < 430.dp
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .combinedClickable(onClick = onClick, onLongClick = onLongClick)
+                .padding(vertical = 12.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            if (editMode) {
+                SelectionCircle(selected)
+                Spacer(modifier = Modifier.width(if (compact) 7.dp else 12.dp))
+            }
+            Text(date, color = TextSecondary, fontSize = if (compact) 13.sp else 16.sp, maxLines = 1, modifier = Modifier.width(if (compact) 54.dp else 70.dp))
+            Box(modifier = Modifier.size(if (compact) 30.dp else 36.dp).clip(CircleShape).background(SoftSurface), contentAlignment = Alignment.Center) {
+                Text("›", color = TextSecondary, fontSize = 18.sp, fontWeight = FontWeight.Bold)
+            }
+            Spacer(modifier = Modifier.width(if (compact) 10.dp else 18.dp))
+            Column(modifier = Modifier.weight(1f)) {
+                Text(title, color = TextPrimary, fontSize = if (compact) 17.sp else 19.sp, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Text(caption, color = TextSecondary, fontSize = if (compact) 13.sp else 15.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            }
+            Spacer(modifier = Modifier.width(8.dp))
+            Column(horizontalAlignment = Alignment.End) {
+                Text(amount, color = portfolioAmountColor(amount, TextPrimary), fontSize = if (compact) 15.sp else 18.sp, fontWeight = FontWeight.ExtraBold, maxLines = 1)
+                Text(formatPercent(rate), color = color, fontSize = 14.sp, fontWeight = FontWeight.Bold)
+            }
         }
     }
 }
 
 @Composable
 private fun ManualAddSheet(onAssetAdd: () -> Unit, onCashAdd: () -> Unit) {
-    Column(modifier = Modifier.fillMaxWidth().padding(horizontal = 30.dp, vertical = 22.dp)) {
+    ResponsiveSheetColumn(verticalPadding = 22.dp) {
         Box(
             modifier = Modifier
                 .width(64.dp)
@@ -6958,88 +7279,131 @@ private fun ManualAddSheet(onAssetAdd: () -> Unit, onCashAdd: () -> Unit) {
 
 @Composable
 private fun InputRow(label: String, value: String, suffix: String, onValueChange: (String) -> Unit) {
-    Row(verticalAlignment = Alignment.CenterVertically) {
-        Text(label, color = TextPrimary, fontSize = 18.sp, fontWeight = FontWeight.Bold, modifier = Modifier.width(76.dp))
-        OutlinedTextField(
-            value = value,
-            onValueChange = { next -> onValueChange(next.filter { it.isDigit() || it == '.' }) },
-            singleLine = true,
-            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
-            shape = RoundedCornerShape(18.dp),
-            colors = appTextFieldColors(),
-            modifier = Modifier.weight(1f)
-        )
-        Spacer(modifier = Modifier.width(10.dp))
-        Text(suffix, color = TextSecondary, fontSize = 16.sp)
+    BoxWithConstraints(modifier = Modifier.fillMaxWidth()) {
+        val compact = maxWidth < 420.dp
+        Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                label,
+                color = TextPrimary,
+                fontSize = if (compact) 16.sp else 18.sp,
+                fontWeight = FontWeight.Bold,
+                modifier = Modifier.width(if (compact) 64.dp else 76.dp)
+            )
+            OutlinedTextField(
+                value = value,
+                onValueChange = { next -> onValueChange(next.filter { it.isDigit() || it == '.' }) },
+                singleLine = true,
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+                shape = RoundedCornerShape(18.dp),
+                colors = appTextFieldColors(),
+                modifier = Modifier.weight(1f)
+            )
+            Spacer(modifier = Modifier.width(if (compact) 7.dp else 10.dp))
+            Text(suffix, color = TextSecondary, fontSize = if (compact) 14.sp else 16.sp)
+        }
     }
-
 }
 
 @Composable
 private fun ExchangeRateInputRow(label: String, value: String, onValueChange: (String) -> Unit, onUpdateClick: () -> Unit) {
-    Row(verticalAlignment = Alignment.CenterVertically) {
-        Text(label, color = TextPrimary, fontSize = 18.sp, fontWeight = FontWeight.Bold, modifier = Modifier.width(76.dp))
-        OutlinedTextField(
-            value = value,
-            onValueChange = { next -> onValueChange(next.filter { it.isDigit() || it == '.' }) },
-            singleLine = true,
-            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
-            shape = RoundedCornerShape(18.dp),
-            colors = appTextFieldColors(),
-            modifier = Modifier.weight(1f)
-        )
-        Spacer(modifier = Modifier.width(10.dp))
-        Text("원", color = TextSecondary, fontSize = 16.sp)
-        Spacer(modifier = Modifier.width(8.dp))
-        Text(
-            "Update",
-            color = BrandGreen,
-            fontSize = 14.sp,
-            fontWeight = FontWeight.ExtraBold,
-            modifier = Modifier
-                .clip(RoundedCornerShape(999.dp))
-                .background(SoftSurface)
-                .clickable(onClick = onUpdateClick)
-                .padding(horizontal = 10.dp, vertical = 7.dp)
-        )
+    BoxWithConstraints(modifier = Modifier.fillMaxWidth()) {
+        val compact = maxWidth < 420.dp
+        Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                label,
+                color = TextPrimary,
+                fontSize = if (compact) 16.sp else 18.sp,
+                fontWeight = FontWeight.Bold,
+                modifier = Modifier.width(if (compact) 64.dp else 76.dp)
+            )
+            OutlinedTextField(
+                value = value,
+                onValueChange = { next -> onValueChange(next.filter { it.isDigit() || it == '.' }) },
+                singleLine = true,
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
+                shape = RoundedCornerShape(18.dp),
+                colors = appTextFieldColors(),
+                modifier = Modifier.weight(1f)
+            )
+            Spacer(modifier = Modifier.width(if (compact) 6.dp else 10.dp))
+            Text("원", color = TextSecondary, fontSize = if (compact) 14.sp else 16.sp)
+            Spacer(modifier = Modifier.width(if (compact) 5.dp else 8.dp))
+            Text(
+                if (compact) "갱신" else "Update",
+                color = BrandGreen,
+                fontSize = 14.sp,
+                fontWeight = FontWeight.ExtraBold,
+                modifier = Modifier
+                    .clip(RoundedCornerShape(999.dp))
+                    .background(SoftSurface)
+                    .clickable(onClick = onUpdateClick)
+                    .padding(horizontal = if (compact) 8.dp else 10.dp, vertical = 7.dp)
+            )
+        }
     }
 }
 
 @Composable
 private fun BacktestToolSwitcher(selected: String, onSelect: (String) -> Unit) {
-    Column(modifier = Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        listOf(
-            listOf("백테스트", "배당", "자가배당"),
-            listOf("배당+성장", "시나리오 비교")
-        ).forEach { rowLabels ->
-            Row(
-                modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                rowLabels.forEach { label ->
-                    val active = selected == label
-                    val toolColor = simulatorToolColor(label)
-                    val inactiveAlpha = if (PanelColor == Color.White) 0.11f else 0.22f
-                    Box(
-                        modifier = Modifier
-                            .weight(1f)
-                            .clip(RoundedCornerShape(999.dp))
-                            .background(if (active) toolColor else toolColor.copy(alpha = inactiveAlpha))
-                            .clickable { onSelect(label) }
-                            .padding(vertical = 11.dp),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        Text(
-                            label,
-                            color = if (active) Color.White else toolColor,
-                            fontSize = 14.sp,
-                            fontWeight = FontWeight.ExtraBold
-                        )
+    BoxWithConstraints(modifier = Modifier.fillMaxWidth()) {
+        val columns = if (maxWidth < 430.dp) 2 else 3
+        val labels = listOf("백테스트", "배당", "자가배당", "배당+성장", "시나리오 비교")
+        Column(modifier = Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            labels.chunked(columns).forEach { rowLabels ->
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    rowLabels.forEach { label ->
+                        val active = selected == label
+                        val toolColor = simulatorToolColor(label)
+                        val inactiveAlpha = if (PanelColor == Color.White) 0.11f else 0.22f
+                        Box(
+                            modifier = Modifier
+                                .weight(1f)
+                                .clip(RoundedCornerShape(999.dp))
+                                .background(if (active) toolColor else toolColor.copy(alpha = inactiveAlpha))
+                                .clickable { onSelect(label) }
+                                .padding(horizontal = 4.dp, vertical = 11.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Text(
+                                label,
+                                color = if (active) Color.White else toolColor,
+                                fontSize = 14.sp,
+                                fontWeight = FontWeight.ExtraBold,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
                     }
+                    repeat(columns - rowLabels.size) { Spacer(modifier = Modifier.weight(1f)) }
                 }
             }
         }
     }
+}
+
+private val simulatorToolLabels = setOf(
+    "백테스트",
+    "배당",
+    "자가배당",
+    "배당+성장",
+    "시나리오 비교"
+)
+
+private fun loadLastSimulatorTool(context: Context): String {
+    val savedTool = context.getSharedPreferences("long_run_portfolio", Context.MODE_PRIVATE)
+        .getString("last_simulator_tool", null)
+    return savedTool?.takeIf { it in simulatorToolLabels } ?: "백테스트"
+}
+
+private fun saveLastSimulatorTool(context: Context, tool: String) {
+    if (tool !in simulatorToolLabels) return
+    context.getSharedPreferences("long_run_portfolio", Context.MODE_PRIVATE)
+        .edit()
+        .putString("last_simulator_tool", tool)
+        .apply()
 }
 
 private fun simulatorToolColor(label: String): Color = when (label) {
@@ -7265,11 +7629,11 @@ private fun dividendScenarioProjectionRows(
     val candidate = dividendCandidates()
         .firstOrNull { it.ticker.equals(preset.ticker, ignoreCase = true) }
         ?: return preset.projectionRows
-    val annualRates = historicalAnnualRates(context, candidate.ticker) ?: return preset.projectionRows
+    val annualRates = threeAssetHistoricalRates(context, candidate.ticker) ?: return preset.projectionRows
     val people = preset.people.ifEmpty { listOf(DividendPersonUi(1L, "본인")) }
     val targetAmount = preset.targetInput.filter(Char::isDigit).toLongOrNull() ?: 0L
     val latestPriceWon = annualRates.latestPrice * if (candidate.currency == "USD") usdKrw else 1.0
-    val dividendYield = annualRates.dividendYieldPercent ?: candidate.yieldRate
+    val dividendYield = annualRates.averageDividendYieldPercent ?: candidate.yieldRate
     val grossAnnualDividendPerShare = latestPriceWon * dividendYield / 100.0
     val withholdingTaxRate = dividendWithholdingTaxRate(candidate)
     val shares = when (preset.modeIndex) {
@@ -7291,7 +7655,7 @@ private fun dividendScenarioProjectionRows(
         grossAnnualDividend = shares * grossAnnualDividendPerShare,
         initialAsset = (shares * latestPriceWon).roundToLong(),
         dividendGrowthRate = annualRates.dividendGrowthCagrPercent ?: candidate.dividendGrowth5y,
-        priceGrowthRate = annualRates.priceCagrPercent,
+        priceGrowthRate = annualRates.priceOnlyCagrPercent,
         people = people,
         withholdingTaxRate = withholdingTaxRate
     ).ifEmpty { preset.projectionRows }
@@ -7685,7 +8049,7 @@ private fun ScenarioComparisonChart(
             modifier = Modifier
                 .fillMaxWidth()
                 .height(250.dp)
-                .clipToBounds()
+                .appChartFrame()
                 .pointerInput(years, metricIndex) {
                     detectTapGestures { offset ->
                         selectedYear = scenarioComparisonYearForOffset(offset.x, size.width.toFloat(), years)
@@ -7700,12 +8064,12 @@ private fun ScenarioComparisonChart(
             val chartHeight = (bottom - top).coerceAtLeast(1f)
             val labelPaint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
                 color = TextSecondary.toArgb()
-                textSize = 18f
+                textSize = ChartAxisTextSize
                 textAlign = android.graphics.Paint.Align.RIGHT
             }
             val yearPaint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
                 color = TextSecondary.toArgb()
-                textSize = 18f
+                textSize = ChartAxisTextSize
                 textAlign = android.graphics.Paint.Align.CENTER
             }
 
@@ -7713,7 +8077,7 @@ private fun ScenarioComparisonChart(
                 val ratio = index / 3f
                 val y = top + chartHeight * ratio
                 val value = (maxValue * (1f - ratio)).roundToLong()
-                drawLine(LineColor, Offset(left, y), Offset(right, y), strokeWidth = 1.2f)
+                drawLine(chartGridColor(), Offset(left, y), Offset(right, y), strokeWidth = ChartGridStrokeWidth)
                 drawContext.canvas.nativeCanvas.drawText(compactWonAxis(value), left - 8f, y + 6f, labelPaint)
             }
 
@@ -7729,7 +8093,7 @@ private fun ScenarioComparisonChart(
                 drawPath(
                     path,
                     scenarioComparisonColor(seriesIndex),
-                    style = androidx.compose.ui.graphics.drawscope.Stroke(width = 4f, cap = StrokeCap.Round)
+                    style = androidx.compose.ui.graphics.drawscope.Stroke(width = ChartSeriesStrokeWidth, cap = StrokeCap.Round)
                 )
             }
 
@@ -7739,13 +8103,12 @@ private fun ScenarioComparisonChart(
             }
 
             val selectedX = left + chartWidth * (selectedYear - years.first()).toFloat() / yearRange.toFloat()
-            drawLine(TextPrimary.copy(alpha = 0.45f), Offset(selectedX, top), Offset(selectedX, bottom), strokeWidth = 2f)
+            drawAppChartSelection(selectedX, top, bottom)
             series.forEachIndexed { seriesIndex, scenario ->
                 ScenarioComparisonEngine.pointAt(scenario, selectedYear)?.let { point ->
                     val value = if (metricIndex == 0) point.monthlyCashFlowWon else point.totalAssetWon
                     val y = bottom - chartHeight * value.toFloat() / maxValue.toFloat()
-                    drawCircle(PanelColor, radius = 7f, center = Offset(selectedX, y))
-                    drawCircle(scenarioComparisonColor(seriesIndex), radius = 5f, center = Offset(selectedX, y))
+                    drawAppChartPoint(Offset(selectedX, y), scenarioComparisonColor(seriesIndex))
                 }
             }
         }
@@ -8090,7 +8453,7 @@ private fun RetirementScenarioSurvivalChart(analyses: List<RetirementScenarioSuc
             modifier = Modifier
                 .fillMaxWidth()
                 .height(240.dp)
-                .clipToBounds()
+                .appChartFrame()
                 .pointerInput(years) {
                     detectTapGestures { offset ->
                         selectedYear = scenarioComparisonYearForOffset(offset.x, size.width.toFloat(), years)
@@ -8106,17 +8469,17 @@ private fun RetirementScenarioSurvivalChart(analyses: List<RetirementScenarioSuc
             val yearRange = (years.last() - years.first()).coerceAtLeast(1)
             val labelPaint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
                 color = TextSecondary.toArgb()
-                textSize = 18f
+                textSize = ChartAxisTextSize
                 textAlign = android.graphics.Paint.Align.RIGHT
             }
             val yearPaint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
                 color = TextSecondary.toArgb()
-                textSize = 18f
+                textSize = ChartAxisTextSize
                 textAlign = android.graphics.Paint.Align.CENTER
             }
             listOf(100, 75, 50, 25, 0).forEach { percent ->
                 val y = bottom - chartHeight * percent / 100f
-                drawLine(LineColor, Offset(left, y), Offset(right, y), strokeWidth = 1.2f)
+                drawLine(chartGridColor(), Offset(left, y), Offset(right, y), strokeWidth = ChartGridStrokeWidth)
                 drawContext.canvas.nativeCanvas.drawText("$percent%", left - 7f, y + 6f, labelPaint)
             }
             analyses.forEachIndexed { index, analysis ->
@@ -8126,19 +8489,18 @@ private fun RetirementScenarioSurvivalChart(analyses: List<RetirementScenarioSuc
                     val y = bottom - chartHeight * row.survivalRatePercent.toFloat() / 100f
                     if (pointIndex == 0) path.moveTo(x, y) else path.lineTo(x, y)
                 }
-                drawPath(path, scenarioComparisonColor(index), style = androidx.compose.ui.graphics.drawscope.Stroke(width = 4f, cap = StrokeCap.Round))
+                drawPath(path, scenarioComparisonColor(index), style = androidx.compose.ui.graphics.drawscope.Stroke(width = ChartSeriesStrokeWidth, cap = StrokeCap.Round))
             }
             listOf(years.first(), years.getOrElse(9) { years.last() }, years.last()).distinct().forEach { year ->
                 val x = left + chartWidth * (year - years.first()).toFloat() / yearRange.toFloat()
                 drawContext.canvas.nativeCanvas.drawText("${year}년", x, bottom + 25f, yearPaint)
             }
             val selectedX = left + chartWidth * (selectedYear - years.first()).toFloat() / yearRange.toFloat()
-            drawLine(TextPrimary.copy(alpha = 0.45f), Offset(selectedX, top), Offset(selectedX, bottom), strokeWidth = 2f)
+            drawAppChartSelection(selectedX, top, bottom)
             analyses.forEachIndexed { index, analysis ->
                 analysis.result.rows.firstOrNull { it.year == selectedYear }?.let { row ->
                     val y = bottom - chartHeight * row.survivalRatePercent.toFloat() / 100f
-                    drawCircle(PanelColor, radius = 7f, center = Offset(selectedX, y))
-                    drawCircle(scenarioComparisonColor(index), radius = 5f, center = Offset(selectedX, y))
+                    drawAppChartPoint(Offset(selectedX, y), scenarioComparisonColor(index))
                 }
             }
         }
@@ -8380,6 +8742,7 @@ private fun RetirementSurvivalChart(rows: List<RetirementSuccessYear>) {
                 modifier = Modifier
                     .width((68 + rows.size * 36).dp)
                     .height(230.dp)
+                    .appChartFrame()
                     .pointerInput(rows.size) {
                         detectTapGestures { offset ->
                             val left = 58f
@@ -8398,27 +8761,28 @@ private fun RetirementSurvivalChart(rows: List<RetirementSuccessYear>) {
                 val groupWidth = chartWidth / rows.size
                 val labelPaint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
                     color = TextSecondary.toArgb()
-                    textSize = 18f
+                    textSize = ChartAxisTextSize
                     textAlign = android.graphics.Paint.Align.RIGHT
                 }
                 val yearPaint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
                     color = TextSecondary.toArgb()
-                    textSize = 18f
+                    textSize = ChartAxisTextSize
                     textAlign = android.graphics.Paint.Align.CENTER
                 }
                 listOf(100, 75, 50, 25, 0).forEach { percent ->
                     val y = bottom - chartHeight * percent / 100f
-                    drawLine(LineColor, Offset(left, y), Offset(right, y), strokeWidth = 1.2f)
+                    drawLine(chartGridColor(), Offset(left, y), Offset(right, y), strokeWidth = ChartGridStrokeWidth)
                     drawContext.canvas.nativeCanvas.drawText("$percent%", left - 7f, y + 6f, labelPaint)
                 }
                 rows.forEachIndexed { index, row ->
                     val barWidth = groupWidth * 0.62f
                     val x = left + groupWidth * index + (groupWidth - barWidth) / 2f
                     val barHeight = chartHeight * row.survivalRatePercent.toFloat() / 100f
-                    drawRect(
-                        color = if (index == selectedIndex) PositiveRed else BrandGreen,
+                    drawRoundRect(
+                        color = if (index == selectedIndex) ChartActualColor else ChartActualColor.copy(alpha = 0.34f),
                         topLeft = Offset(x, bottom - barHeight),
-                        size = androidx.compose.ui.geometry.Size(barWidth, barHeight)
+                        size = androidx.compose.ui.geometry.Size(barWidth, barHeight),
+                        cornerRadius = androidx.compose.ui.geometry.CornerRadius(5f, 5f)
                     )
                     drawContext.canvas.nativeCanvas.drawText(
                         "${row.year}년",
@@ -8551,7 +8915,7 @@ private fun BacktestScreen(
     var deletePreset by remember { mutableStateOf<BacktestPreset?>(null) }
     var renamePreset by remember { mutableStateOf<BacktestPreset?>(null) }
     var isRunning by remember { mutableStateOf(false) }
-    var selectedTool by remember { mutableStateOf("백테스트") }
+    var selectedTool by remember(context) { mutableStateOf(loadLastSimulatorTool(context)) }
 
     fun currentPreset(name: String = "마지막 백테스트", savedResult: BacktestResultUi? = result) = BacktestPreset(
         name = name,
@@ -8707,7 +9071,10 @@ private fun BacktestScreen(
             Spacer(modifier = Modifier.height(8.dp))
         }
         AppHeader(title = "시뮬레이터")
-        BacktestToolSwitcher(selected = selectedTool) { selectedTool = it }
+        BacktestToolSwitcher(selected = selectedTool) { tool ->
+            selectedTool = tool
+            saveLastSimulatorTool(context, tool)
+        }
         Spacer(modifier = Modifier.height(18.dp))
         when (selectedTool) {
             "배당" -> DividendSimulationContent(accounts, usdKrw)
@@ -8784,7 +9151,7 @@ private fun BacktestScreen(
                 labels = backtest.monthLabels,
                 valueLabel = { formatWon(it.roundToLong()) },
                 yAxisLabel = { formatAxisWon(it) },
-                color = PositiveRed,
+                color = ChartActualColor,
                 chartType = BacktestChartType.ASSET,
                 allocationDetails = backtest.monthlyAllocations
             )
@@ -9029,14 +9396,36 @@ private fun SelfDividendPlaceholderContent() {
         }
     }
     var showAssetPicker by remember { mutableStateOf(false) }
-    var projectionRows by remember { mutableStateOf(cachedPreset?.result ?: emptyList()) }
+    var projectionRows by remember {
+        mutableStateOf(cachedPreset?.let { migratedSelfDividendResult(context, it) } ?: emptyList())
+    }
     var showSaveDialog by remember { mutableStateOf(false) }
     var showLoadDialog by remember { mutableStateOf(false) }
     var presetName by remember { mutableStateOf("") }
     var deletePreset by remember { mutableStateOf<SelfDividendPreset?>(null) }
     var renamePreset by remember { mutableStateOf<SelfDividendPreset?>(null) }
     var isCalculating by remember { mutableStateOf(false) }
+    var historicalRateRevision by remember { mutableIntStateOf(0) }
     val assetOptions = remember(context) { manualAssetOptions(context) }
+
+    LaunchedEffect(selectedAssets.map { it.ticker.trim().uppercase(Locale.US) }) {
+        val tickers = selectedAssets
+            .map { it.ticker.trim().uppercase(Locale.US) }
+            .filter { it.isNotBlank() }
+            .distinct()
+        if (tickers.isNotEmpty()) {
+            withContext(Dispatchers.IO) {
+                tickers.forEach { ticker ->
+                    refreshThreeAssetHistoricalRates(
+                        context = context,
+                        ticker = ticker,
+                        includeDividends = true
+                    )
+                }
+            }
+            historicalRateRevision += 1
+        }
+    }
 
     fun updateAsset(index: Int, next: SelfDividendAssetUi) {
         if (index in selectedAssets.indices) selectedAssets[index] = next
@@ -9106,7 +9495,7 @@ private fun SelfDividendPlaceholderContent() {
         }
         Spacer(modifier = Modifier.height(10.dp))
         Text(
-            "매년 연말 수익 반영 후 세후 인출 목표액을 맞추도록 매도금액과 해외주식 양도세를 계산합니다.",
+            "1인 기준 배당소득세·건보료·종소세를 뺀 세후 배당을 연 인출액에 먼저 채우고 부족분만 매월 매도합니다. 월별 가격 상승과 양도세를 반영하며 첫 12개월은 0년차입니다.",
             color = TextSecondary,
             fontSize = 14.sp,
             lineHeight = 21.sp
@@ -9119,6 +9508,7 @@ private fun SelfDividendPlaceholderContent() {
             selectedAssets.forEachIndexed { index, asset ->
                 SelfDividendAssetInputCard(
                     asset = asset,
+                    historicalRateRevision = historicalRateRevision,
                     onChange = { updateAsset(index, it) },
                     onDelete = {
                         selectedAssets.removeAt(index)
@@ -9142,7 +9532,11 @@ private fun SelfDividendPlaceholderContent() {
                             assetsSnapshot.map { it.ticker.trim().uppercase(Locale.US) }
                                 .distinct()
                                 .forEach { ticker ->
-                                    refreshHistoricalAnnualRates(context, ticker, includeDividends = false)
+                                    refreshThreeAssetHistoricalRates(
+                                        context,
+                                        ticker,
+                                        includeDividends = true
+                                    )
                                 }
                         }
                         val rows = withContext(Dispatchers.Default) {
@@ -9261,9 +9655,12 @@ private fun SelfDividendPlaceholderContent() {
                                         onClick = {
                                             selectedAssets.clear()
                                             selectedAssets.addAll(preset.assets)
-                                            projectionRows = preset.result
-                                            lastSelfDividendPresetCache = preset
-                                            saveLastSelfDividendPreset(context, preset)
+                                            val loadedPreset = preset.copy(
+                                                result = migratedSelfDividendResult(context, preset)
+                                            )
+                                            projectionRows = loadedPreset.result
+                                            lastSelfDividendPresetCache = loadedPreset
+                                            saveLastSelfDividendPreset(context, loadedPreset)
                                             showLoadDialog = false
                                         },
                                         onLongClick = {
@@ -10553,14 +10950,19 @@ private fun FourAssetResultContent(
         Spacer(modifier = Modifier.height(12.dp))
         SelfDividendSummaryBox("20년 뒤 최종 자산", formatWon(result.finalAssetWon), modifier = Modifier.fillMaxWidth())
         Spacer(modifier = Modifier.height(14.dp))
-        assets.chunked(2).forEach { rowAssets ->
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
-                rowAssets.forEach { asset ->
-                    FourAssetShareBox(asset.ticker, result.initialSharesByTicker[asset.ticker] ?: 0.0, modifier = Modifier.weight(1f))
+        BoxWithConstraints(modifier = Modifier.fillMaxWidth()) {
+            val columns = if (maxWidth >= 720.dp) 3 else 2
+            Column(modifier = Modifier.fillMaxWidth()) {
+                assets.chunked(columns).forEach { rowAssets ->
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+                        rowAssets.forEach { asset ->
+                            FourAssetShareBox(asset.ticker, result.initialSharesByTicker[asset.ticker] ?: 0.0, modifier = Modifier.weight(1f))
+                        }
+                        repeat(columns - rowAssets.size) { Spacer(modifier = Modifier.weight(1f)) }
+                    }
+                    Spacer(modifier = Modifier.height(8.dp))
                 }
-                if (rowAssets.size == 1) Spacer(modifier = Modifier.weight(1f))
             }
-            Spacer(modifier = Modifier.height(8.dp))
         }
         Spacer(modifier = Modifier.height(8.dp))
         FourAssetStackedChart(result.rows, assets)
@@ -10609,6 +11011,7 @@ private fun FourAssetStackedChart(
             modifier = Modifier
                 .fillMaxWidth()
                 .height(230.dp)
+                .appChartFrame()
                 .pointerInput(rows) {
                     detectTapGestures { offset ->
                         if (rows.isNotEmpty()) {
@@ -10626,12 +11029,12 @@ private fun FourAssetStackedChart(
             val chartHeight = (bottom - top).coerceAtLeast(1f)
             val labelPaint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
                 color = TextSecondary.toArgb()
-                textSize = 20f
+                textSize = ChartAxisTextSize
                 textAlign = android.graphics.Paint.Align.RIGHT
             }
             val xPaint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
                 color = TextSecondary.toArgb()
-                textSize = 18f
+                textSize = ChartAxisTextSize
                 textAlign = android.graphics.Paint.Align.CENTER
             }
 
@@ -10639,7 +11042,7 @@ private fun FourAssetStackedChart(
                 val ratio = index / 3f
                 val y = top + chartHeight * ratio
                 val value = maxValue * (1f - ratio)
-                drawLine(LineColor, Offset(left, y), Offset(right, y), strokeWidth = 1.2f)
+                drawLine(chartGridColor(), Offset(left, y), Offset(right, y), strokeWidth = ChartGridStrokeWidth)
                 drawContext.canvas.nativeCanvas.drawText("${(value / 100_000_000f).roundToInt()}억", left - 8f, y + 7f, labelPaint)
             }
 
@@ -10673,8 +11076,11 @@ private fun FourAssetStackedChart(
             selectedIndex?.let { selected ->
                 val row = rows.getOrNull(selected) ?: return@let
                 val x = left + slot * selected + slot / 2f
-                drawLine(TextPrimary.copy(alpha = 0.7f), Offset(x, top), Offset(x, bottom), strokeWidth = 2f)
-                drawCircle(TextPrimary, radius = 4.5f, center = Offset(x, bottom - (row.totalAssetWon.toDouble() / maxValue.toDouble() * chartHeight).toFloat()))
+                drawAppChartSelection(x, top, bottom)
+                drawAppChartPoint(
+                    Offset(x, bottom - (row.totalAssetWon.toDouble() / maxValue.toDouble() * chartHeight).toFloat()),
+                    assets.firstOrNull()?.color ?: ChartActualColor
+                )
             }
         }
         selectedIndex?.let { index ->
@@ -10734,25 +11140,67 @@ private fun FourAssetReportTable(
     Column(modifier = Modifier.fillMaxWidth()) {
         Text("20개년 연도별 은퇴 명세", color = TextPrimary, fontSize = 18.sp, fontWeight = FontWeight.ExtraBold)
         Spacer(modifier = Modifier.height(8.dp))
-        FourAssetReportHeader()
-        rows.forEach { row ->
-            Column(modifier = Modifier.fillMaxWidth().padding(vertical = 9.dp)) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text("${row.year}년", color = TextPrimary, fontSize = 13.sp, fontWeight = FontWeight.ExtraBold, modifier = Modifier.width(44.dp))
-                    Text(formatEokWon(row.totalAssetWon), color = TextPrimary, fontSize = 13.sp, fontWeight = FontWeight.ExtraBold, modifier = Modifier.weight(1f), textAlign = TextAlign.End)
-                    Text(formatManWon(row.grossAnnualDividendWon), color = TextSecondary, fontSize = 12.sp, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f), textAlign = TextAlign.End)
-                    Text(formatManWon(row.netAnnualDividendWon), color = BrandGreen, fontSize = 12.sp, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f), textAlign = TextAlign.End)
-                    Text(formatManWon(row.annualExpenseWon), color = PositiveRed, fontSize = 12.sp, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f), textAlign = TextAlign.End)
+        BoxWithConstraints(modifier = Modifier.fillMaxWidth()) {
+            if (maxWidth < 520.dp) {
+                Column(modifier = Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    rows.forEach { row -> FourAssetCompactReportRow(row, assets) }
                 }
-                Text(
-                    (assets.joinToString(" / ") { asset -> "${asset.ticker} ${formatEokWon(row.assetValueWon(asset.ticker))}" }) + " / 현금 ${formatEokWon(row.cashWon)}",
-                    color = TextSecondary,
-                    fontSize = 11.sp,
-                    modifier = Modifier.padding(start = 44.dp, top = 3.dp)
-                )
-                Text(row.action, color = MutedText, fontSize = 11.sp, modifier = Modifier.padding(start = 44.dp, top = 2.dp))
+            } else {
+                Column(modifier = Modifier.fillMaxWidth()) {
+                    FourAssetReportHeader()
+                    rows.forEach { row ->
+                        Column(modifier = Modifier.fillMaxWidth().padding(vertical = 9.dp)) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Text("${row.year}년", color = TextPrimary, fontSize = 13.sp, fontWeight = FontWeight.ExtraBold, modifier = Modifier.width(44.dp))
+                                Text(formatEokWon(row.totalAssetWon), color = TextPrimary, fontSize = 13.sp, fontWeight = FontWeight.ExtraBold, modifier = Modifier.weight(1f), textAlign = TextAlign.End)
+                                Text(formatManWon(row.grossAnnualDividendWon), color = TextSecondary, fontSize = 12.sp, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f), textAlign = TextAlign.End)
+                                Text(formatManWon(row.netAnnualDividendWon), color = BrandGreen, fontSize = 12.sp, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f), textAlign = TextAlign.End)
+                                Text(formatManWon(row.annualExpenseWon), color = PositiveRed, fontSize = 12.sp, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f), textAlign = TextAlign.End)
+                            }
+                            Text(
+                                (assets.joinToString(" / ") { asset -> "${asset.ticker} ${formatEokWon(row.assetValueWon(asset.ticker))}" }) + " / 현금 ${formatEokWon(row.cashWon)}",
+                                color = TextSecondary,
+                                fontSize = 11.sp,
+                                modifier = Modifier.padding(start = 44.dp, top = 3.dp)
+                            )
+                            Text(row.action, color = MutedText, fontSize = 11.sp, modifier = Modifier.padding(start = 44.dp, top = 2.dp))
+                        }
+                    }
+                }
             }
         }
+    }
+}
+
+@Composable
+private fun FourAssetCompactReportRow(row: FourAssetAnnualRow, assets: List<FourAssetDistributionAssetUi>) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(14.dp))
+            .background(PanelColor)
+            .padding(12.dp)
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text("${row.year}년차", color = TextPrimary, fontSize = 14.sp, fontWeight = FontWeight.ExtraBold)
+            Spacer(modifier = Modifier.weight(1f))
+            Text(formatEokWon(row.totalAssetWon), color = TextPrimary, fontSize = 15.sp, fontWeight = FontWeight.ExtraBold)
+        }
+        Spacer(modifier = Modifier.height(7.dp))
+        Text(
+            "세전배당 ${formatManWon(row.grossAnnualDividendWon)} · 세후배당 ${formatManWon(row.netAnnualDividendWon)} · 생활비 ${formatManWon(row.annualExpenseWon)}",
+            color = TextSecondary,
+            fontSize = 11.sp,
+            lineHeight = 16.sp
+        )
+        Spacer(modifier = Modifier.height(4.dp))
+        Text(
+            (assets.joinToString(" · ") { asset -> "${asset.ticker} ${formatEokWon(row.assetValueWon(asset.ticker))}" }) + " · 현금 ${formatEokWon(row.cashWon)}",
+            color = TextSecondary,
+            fontSize = 10.sp,
+            lineHeight = 15.sp
+        )
+        Text(row.action, color = MutedText, fontSize = 10.sp, lineHeight = 15.sp)
     }
 }
 
@@ -11056,48 +11504,198 @@ private fun SelfDividendProjectionResult(rows: List<SelfDividendProjectionRow>) 
         SectionTitle("자가배당 결과")
         Spacer(modifier = Modifier.height(12.dp))
         Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
-            SelfDividendSummaryBox("1년 후 월 실수령", formatWon(first.monthlyTakeHome), modifier = Modifier.weight(1f))
-            SelfDividendSummaryBox("20년 후 세후 자산", formatWon(last.totalAsset), modifier = Modifier.weight(1f))
+            SelfDividendSummaryBox("0년차 월 세후", formatWon(first.monthlyTakeHome), modifier = Modifier.weight(1f))
+            SelfDividendSummaryBox("${last.year}년차 세후 자산", formatWon(last.totalAsset), modifier = Modifier.weight(1f))
         }
+        Spacer(modifier = Modifier.height(8.dp))
+        Text(
+            "0년차 배당 ${formatWon(first.grossDividend)} → 세후 ${formatWon(first.afterTaxDividend)} · 매도 ${formatWon(first.grossSale)}",
+            color = TextSecondary,
+            fontSize = 12.sp,
+            fontWeight = FontWeight.Bold
+        )
         Spacer(modifier = Modifier.height(14.dp))
         SelfDividendProjectionChart(rows)
         Spacer(modifier = Modifier.height(14.dp))
         rows.forEach { row ->
-            Column(modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp)) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Text(
-                        "${row.year}년",
-                        color = TextPrimary,
-                        fontSize = 15.sp,
-                        fontWeight = FontWeight.ExtraBold,
-                        modifier = Modifier.width(46.dp)
-                    )
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text("월 ${formatWon(row.monthlyTakeHome)}", color = TextPrimary, fontSize = 15.sp, fontWeight = FontWeight.Bold)
-                        Text("세후 자산 ${formatWon(row.totalAsset)} · 매도 ${formatWon(row.grossSale)}", color = TextSecondary, fontSize = 12.sp)
-                    }
-                    Column(horizontalAlignment = Alignment.End) {
-                        Text("양도세", color = TextSecondary, fontSize = 11.sp, fontWeight = FontWeight.Bold)
-                        Text(
-                            formatWon(row.capitalGainsTax),
-                            color = if (row.capitalGainsTax > 0L) PositiveRed else BrandGreen,
-                            fontSize = 13.sp,
-                            fontWeight = FontWeight.Bold
-                        )
-                    }
+            BoxWithConstraints(modifier = Modifier.fillMaxWidth()) {
+                if (maxWidth < 430.dp) {
+                    SelfDividendCompactYearRow(row)
+                } else {
+                    SelfDividendWideYearRow(row)
                 }
-                Text(row.note, color = MutedText, fontSize = 12.sp, modifier = Modifier.padding(start = 46.dp, top = 3.dp))
             }
         }
     }
 }
 
 @Composable
+private fun SelfDividendCompactYearRow(row: SelfDividendProjectionRow) {
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 6.dp)
+            .clip(RoundedCornerShape(16.dp))
+            .background(PanelColor)
+            .padding(horizontal = 14.dp, vertical = 13.dp)
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.fillMaxWidth()) {
+            Text(
+                "${row.year}년차",
+                color = TextPrimary,
+                fontSize = 15.sp,
+                fontWeight = FontWeight.ExtraBold
+            )
+            Spacer(modifier = Modifier.weight(1f))
+            Text("월 세후", color = TextSecondary, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+            Spacer(modifier = Modifier.width(8.dp))
+            Text(
+                formatWon(row.monthlyTakeHome),
+                color = TextPrimary,
+                fontSize = 16.sp,
+                fontWeight = FontWeight.ExtraBold,
+                maxLines = 1
+            )
+        }
+        Spacer(modifier = Modifier.height(12.dp))
+        Row(horizontalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.fillMaxWidth()) {
+            SelfDividendCompactMetric("세후 자산", formatWon(row.totalAsset), Modifier.weight(1f))
+            SelfDividendCompactMetric(
+                "연 인출률(세전)",
+                formatSelfDividendWithdrawalRate(row),
+                Modifier.weight(1f),
+                CashOrange
+            )
+        }
+        Spacer(modifier = Modifier.height(10.dp))
+        Row(horizontalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.fillMaxWidth()) {
+            SelfDividendCompactMetric("연 배당", formatWon(row.grossDividend), Modifier.weight(1f))
+            SelfDividendCompactMetric("세후 배당", formatWon(row.afterTaxDividend), Modifier.weight(1f), BrandGreen)
+        }
+        Spacer(modifier = Modifier.height(10.dp))
+        Row(horizontalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.fillMaxWidth()) {
+            SelfDividendCompactMetric("연 매도액", formatWon(row.grossSale), Modifier.weight(1f))
+            SelfDividendCompactMetric(
+                "세후 매도액",
+                formatWon(selfDividendAfterTaxSale(row)),
+                Modifier.weight(1f),
+                BrandGreen
+            )
+        }
+        Spacer(modifier = Modifier.height(10.dp))
+        Text(
+            selfDividendTaxNote(row),
+            color = MutedText,
+            fontSize = 11.sp,
+            lineHeight = 16.sp
+        )
+    }
+}
+
+@Composable
+private fun SelfDividendCompactMetric(
+    label: String,
+    value: String,
+    modifier: Modifier = Modifier,
+    valueColor: Color = TextPrimary
+) {
+    Column(modifier = modifier) {
+        Text(label, color = TextSecondary, fontSize = 10.sp, fontWeight = FontWeight.Bold)
+        Spacer(modifier = Modifier.height(3.dp))
+        Text(
+            value,
+            color = valueColor,
+            fontSize = 13.sp,
+            fontWeight = FontWeight.Bold,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis
+        )
+    }
+}
+
+@Composable
+private fun SelfDividendWideYearRow(row: SelfDividendProjectionRow) {
+    Column(modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp)) {
+        Row(verticalAlignment = Alignment.Top) {
+            Text(
+                "${row.year}년차",
+                color = TextPrimary,
+                fontSize = 13.sp,
+                fontWeight = FontWeight.ExtraBold,
+                modifier = Modifier.width(54.dp)
+            )
+            Column(modifier = Modifier.weight(1f)) {
+                Row(horizontalArrangement = Arrangement.spacedBy(16.dp), modifier = Modifier.fillMaxWidth()) {
+                    SelfDividendCompactMetric("세후 자산", formatWon(row.totalAsset), Modifier.weight(1f))
+                    SelfDividendCompactMetric(
+                        "연 인출률(세전)",
+                        formatSelfDividendWithdrawalRate(row),
+                        Modifier.weight(1f),
+                        CashOrange
+                    )
+                }
+                Spacer(modifier = Modifier.height(9.dp))
+                Row(horizontalArrangement = Arrangement.spacedBy(16.dp), modifier = Modifier.fillMaxWidth()) {
+                    SelfDividendCompactMetric("연 배당", formatWon(row.grossDividend), Modifier.weight(1f))
+                    SelfDividendCompactMetric(
+                        "세후 배당",
+                        formatWon(row.afterTaxDividend),
+                        Modifier.weight(1f),
+                        BrandGreen
+                    )
+                }
+                Spacer(modifier = Modifier.height(9.dp))
+                Row(horizontalArrangement = Arrangement.spacedBy(16.dp), modifier = Modifier.fillMaxWidth()) {
+                    SelfDividendCompactMetric("연 매도액", formatWon(row.grossSale), Modifier.weight(1f))
+                    SelfDividendCompactMetric(
+                        "세후 매도액",
+                        formatWon(selfDividendAfterTaxSale(row)),
+                        Modifier.weight(1f),
+                        BrandGreen
+                    )
+                }
+            }
+            Spacer(modifier = Modifier.width(16.dp))
+            Column(horizontalAlignment = Alignment.End, modifier = Modifier.width(88.dp)) {
+                Text("월 세후", color = TextSecondary, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                Text(
+                    formatWon(row.monthlyTakeHome),
+                    color = TextPrimary,
+                    fontSize = 13.sp,
+                    fontWeight = FontWeight.ExtraBold
+                )
+            }
+        }
+        Text(
+            selfDividendTaxNote(row),
+            color = MutedText,
+            fontSize = 12.sp,
+            modifier = Modifier.padding(start = 54.dp, top = 3.dp)
+        )
+    }
+}
+
+private fun formatSelfDividendWithdrawalRate(row: SelfDividendProjectionRow): String {
+    if (row.assetBeforeWithdrawal <= 0L) return "0%"
+    val withdrawn = row.grossDividend.toDouble() + row.grossSale.toDouble()
+    return "${formatDecimal(withdrawn / row.assetBeforeWithdrawal * 100.0)}%"
+}
+
+private fun selfDividendAfterTaxSale(row: SelfDividendProjectionRow): Long =
+    (row.grossSale - row.capitalGainsTax).coerceAtLeast(0L)
+
+private fun selfDividendTaxNote(row: SelfDividendProjectionRow): String =
+    "배당소득세·건보료·종소세 ${formatWon(row.dividendTax)} · " +
+        "양도세 ${formatWon(row.capitalGainsTax)} · ${row.note}"
+
+@Composable
 private fun SelfDividendProjectionChart(rows: List<SelfDividendProjectionRow>) {
-    val labels = rows.map { "${it.year}년" }
+    val labels = rows.map { "${it.year}년차" }
     val maxValue = rows.maxOfOrNull { it.totalAsset }?.coerceAtLeast(1L) ?: 1L
     val lastTotalAsset = rows.lastOrNull()?.totalAsset ?: 0L
     val totalTax = rows.sumOf { it.capitalGainsTax }
+    val totalDividend = rows.sumOf { it.grossDividend }
+    val totalDividendTax = rows.sumOf { it.dividendTax }
     var selectedIndex by remember(rows) { mutableStateOf<Int?>(null) }
     val statusText = when {
         lastTotalAsset <= 0L -> "자산 고갈 위험"
@@ -11124,13 +11722,14 @@ private fun SelfDividendProjectionChart(rows: List<SelfDividendProjectionRow>) {
         }
         Spacer(modifier = Modifier.height(12.dp))
         Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
-            FourAssetLegend("세후 총자산", PositiveRed)
+            FourAssetLegend("세후 총자산", ChartActualColor)
         }
         Spacer(modifier = Modifier.height(8.dp))
         Canvas(
             modifier = Modifier
                 .fillMaxWidth()
                 .height(230.dp)
+                .appChartFrame()
                 .pointerInput(rows) {
                     detectTapGestures { offset ->
                         if (rows.isNotEmpty()) {
@@ -11148,12 +11747,12 @@ private fun SelfDividendProjectionChart(rows: List<SelfDividendProjectionRow>) {
             val chartHeight = (bottom - top).coerceAtLeast(1f)
             val labelPaint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
                 color = TextSecondary.toArgb()
-                textSize = 20f
+                textSize = ChartAxisTextSize
                 textAlign = android.graphics.Paint.Align.RIGHT
             }
             val xPaint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
                 color = TextSecondary.toArgb()
-                textSize = 18f
+                textSize = ChartAxisTextSize
                 textAlign = android.graphics.Paint.Align.CENTER
             }
 
@@ -11161,9 +11760,9 @@ private fun SelfDividendProjectionChart(rows: List<SelfDividendProjectionRow>) {
                 val ratio = index / 3f
                 val y = top + chartHeight * ratio
                 val value = maxValue * (1f - ratio)
-                drawLine(LineColor, Offset(left, y), Offset(right, y), strokeWidth = 1.2f)
+                drawLine(chartGridColor(), Offset(left, y), Offset(right, y), strokeWidth = ChartGridStrokeWidth)
                 drawContext.canvas.nativeCanvas.drawText(
-                    "${(value / 100_000_000f).roundToInt()}억",
+                    formatAxisWon(value.toDouble()),
                     left - 8f,
                     y + 7f,
                     labelPaint
@@ -11179,15 +11778,16 @@ private fun SelfDividendProjectionChart(rows: List<SelfDividendProjectionRow>) {
                     .coerceAtLeast(0f)
                 val y = bottom - height
                 if (height > 0f) {
-                    drawRect(
-                        color = PositiveRed,
+                    drawRoundRect(
+                        color = ChartActualColor,
                         topLeft = Offset(x, y),
-                        size = androidx.compose.ui.geometry.Size(barWidth, height)
+                        size = androidx.compose.ui.geometry.Size(barWidth, height),
+                        cornerRadius = androidx.compose.ui.geometry.CornerRadius(5f, 5f)
                     )
                 }
                 if (index == 0 || index == 9 || index == rows.lastIndex) {
                     drawContext.canvas.nativeCanvas.drawText(
-                        "${row.year}년",
+                        "${row.year}년차",
                         x + barWidth / 2f,
                         bottom + 25f,
                         xPaint
@@ -11199,8 +11799,8 @@ private fun SelfDividendProjectionChart(rows: List<SelfDividendProjectionRow>) {
                 val row = rows.getOrNull(selected) ?: return@let
                 val x = left + slot * selected + slot / 2f
                 val y = bottom - (row.totalAsset.toDouble() / maxValue.toDouble() * chartHeight).toFloat()
-                drawLine(TextPrimary.copy(alpha = 0.7f), Offset(x, top), Offset(x, bottom), strokeWidth = 2f)
-                drawCircle(TextPrimary, radius = 4.5f, center = Offset(x, y))
+                drawAppChartSelection(x, top, bottom)
+                drawAppChartPoint(Offset(x, y), ChartActualColor)
             }
         }
         selectedIndex?.let { index ->
@@ -11208,6 +11808,8 @@ private fun SelfDividendProjectionChart(rows: List<SelfDividendProjectionRow>) {
                 SelfDividendSelectedValue(
                     label = labels.getOrNull(index) ?: "${index + 1}년",
                     monthlyTakeHome = row.monthlyTakeHome,
+                    afterTaxDividend = row.afterTaxDividend,
+                    grossSale = row.grossSale,
                     totalAsset = row.totalAsset,
                     modifier = Modifier.padding(top = 12.dp)
                 )
@@ -11215,7 +11817,7 @@ private fun SelfDividendProjectionChart(rows: List<SelfDividendProjectionRow>) {
         }
         Spacer(modifier = Modifier.height(10.dp))
         Text(
-            "누적 양도세 ${formatWon(totalTax)}",
+            "누적 배당 ${formatWon(totalDividend)} · 배당소득세·건보료·종소세 ${formatWon(totalDividendTax)} · 양도세 ${formatWon(totalTax)}",
             color = TextSecondary,
             fontSize = 12.sp
         )
@@ -11226,6 +11828,8 @@ private fun SelfDividendProjectionChart(rows: List<SelfDividendProjectionRow>) {
 private fun SelfDividendSelectedValue(
     label: String,
     monthlyTakeHome: Long,
+    afterTaxDividend: Long,
+    grossSale: Long,
     totalAsset: Long,
     modifier: Modifier = Modifier
 ) {
@@ -11240,7 +11844,9 @@ private fun SelfDividendSelectedValue(
         Text(label, color = TextSecondary, fontSize = 13.sp, fontWeight = FontWeight.Bold)
         Spacer(modifier = Modifier.weight(1f))
         Column(horizontalAlignment = Alignment.End) {
-            Text("월 세후 배당금액 ${formatWon(monthlyTakeHome)}", color = TextPrimary, fontSize = 14.sp, fontWeight = FontWeight.ExtraBold)
+            Text("월 세후 인출액 ${formatWon(monthlyTakeHome)}", color = TextPrimary, fontSize = 14.sp, fontWeight = FontWeight.ExtraBold)
+            Spacer(modifier = Modifier.height(3.dp))
+            Text("세후 배당 ${formatWon(afterTaxDividend)} · 매도 ${formatWon(grossSale)}", color = TextSecondary, fontSize = 12.sp, fontWeight = FontWeight.Bold)
             Spacer(modifier = Modifier.height(3.dp))
             Text("총 자산 ${formatWon(totalAsset)}", color = TextSecondary, fontSize = 12.sp, fontWeight = FontWeight.Bold)
         }
@@ -11268,18 +11874,37 @@ private fun calculateSelfDividendProjection(context: Context, assets: List<SelfD
         if (investment <= 0L) {
             null
         } else {
-            val downloadedReturn = selfDividendDownloadedAnnualReturn(context, asset.ticker)
+            val rates = threeAssetHistoricalRates(context, asset.ticker)
+            val downloadedReturn = rates?.priceOnlyCagrPercent?.div(100.0)
+            val dividendYield = rates?.averageDividendYieldPercent?.div(100.0)
+                ?: selfDividendExpectedDividendYield(asset.ticker)
             SelfDividendAssetInput(
                 taxable = asset.taxMode == "해외직투 양도세",
                 expectedAnnualReturn = (downloadedReturn ?: selfDividendExpectedAnnualReturn(asset.ticker)).coerceAtLeast(-0.99),
                 investmentAmount = investment.toDouble(),
                 baseAnnualWithdrawal = withdrawal.toDouble(),
-                withdrawalGrowthRate = (asset.withdrawalGrowthRate.toDoubleOrNull() ?: 0.0) / 100.0
+                withdrawalGrowthRate = (asset.withdrawalGrowthRate.toDoubleOrNull() ?: 0.0) / 100.0,
+                annualDividendYield = dividendYield,
+                dividendWithholdingTaxRate = if (isKoreanTicker(asset.ticker)) {
+                    DividendTaxEngine.DOMESTIC_WITHHOLDING_TAX_RATE
+                } else {
+                    DividendTaxEngine.OVERSEAS_WITHHOLDING_TAX_RATE
+                }
             )
         }
     }
     return SelfDividendEngine.calculate(inputs)
 }
+
+private fun migratedSelfDividendResult(
+    context: Context,
+    preset: SelfDividendPreset
+): List<SelfDividendProjectionRow> =
+    if (preset.result.isNotEmpty() && preset.assets.isNotEmpty()) {
+        calculateSelfDividendProjection(context, preset.assets)
+    } else {
+        preset.result
+    }
 
 private fun selfDividendExpectedAnnualReturn(ticker: String): Double =
     when (ticker.uppercase(Locale.US)) {
@@ -11289,11 +11914,8 @@ private fun selfDividendExpectedAnnualReturn(ticker: String): Double =
         else -> 0.08
     }
 
-private fun selfDividendDownloadedAnnualReturn(context: Context, ticker: String): Double? {
-    return historicalAnnualRates(context, ticker)
-        ?.priceCagrPercent
-        ?.div(100.0)
-}
+private fun selfDividendExpectedDividendYield(ticker: String): Double =
+    estimatedAnnualDividendYield(ticker).coerceAtLeast(0.0)
 
 private fun digitsToLong(value: String): Long =
     value.filter { it.isDigit() }.toLongOrNull() ?: 0L
@@ -11304,9 +11926,18 @@ private fun Double.formatOneDecimal(): String =
 @Composable
 private fun SelfDividendAssetInputCard(
     asset: SelfDividendAssetUi,
+    historicalRateRevision: Int,
     onChange: (SelfDividendAssetUi) -> Unit,
     onDelete: () -> Unit
 ) {
+    val context = LocalContext.current
+    val rates = remember(context, asset.ticker, historicalRateRevision) {
+        threeAssetHistoricalRates(context, asset.ticker)
+    }
+    val annualPriceGrowthPercent = rates?.priceOnlyCagrPercent
+        ?: selfDividendExpectedAnnualReturn(asset.ticker) * 100.0
+    val annualDividendYieldPercent = rates?.averageDividendYieldPercent
+        ?: selfDividendExpectedDividendYield(asset.ticker) * 100.0
     Column(
         modifier = Modifier
             .fillMaxWidth()
@@ -11330,6 +11961,22 @@ private fun SelfDividendAssetInputCard(
             )
         }
         Spacer(modifier = Modifier.height(12.dp))
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            SelfDividendRateBox(
+                label = "상장 후 연평균 상승률",
+                value = "${formatDecimal(annualPriceGrowthPercent)}%",
+                modifier = Modifier.weight(1f)
+            )
+            SelfDividendRateBox(
+                label = "상장 후 평균 배당률",
+                value = "${formatDecimal(annualDividendYieldPercent)}%",
+                modifier = Modifier.weight(1f)
+            )
+        }
+        Spacer(modifier = Modifier.height(8.dp))
         BacktestInputRow("거치식 투자금", asset.investmentAmount, "원") {
             onChange(asset.copy(investmentAmount = it))
         }
@@ -11340,10 +11987,33 @@ private fun SelfDividendAssetInputCard(
             onChange(asset.copy(withdrawalGrowthRate = it))
         }
         Spacer(modifier = Modifier.height(8.dp))
-        Text("과세 방식", color = TextPrimary, fontSize = 15.sp, fontWeight = FontWeight.Bold)
+        Text("매도 과세 방식", color = TextPrimary, fontSize = 15.sp, fontWeight = FontWeight.Bold)
         BacktestChoiceRow(listOf("해외직투 양도세", "세금 미반영"), asset.taxMode) {
             onChange(asset.copy(taxMode = it))
         }
+        Text(
+            "배당 관련 세금은 매도 과세 방식과 별도로 항상 반영합니다.",
+            color = MutedText,
+            fontSize = 11.sp
+        )
+    }
+}
+
+@Composable
+private fun SelfDividendRateBox(
+    label: String,
+    value: String,
+    modifier: Modifier = Modifier
+) {
+    Column(
+        modifier = modifier
+            .clip(RoundedCornerShape(14.dp))
+            .background(SoftSurface)
+            .padding(horizontal = 12.dp, vertical = 10.dp)
+    ) {
+        Text(label, color = TextSecondary, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+        Spacer(modifier = Modifier.height(4.dp))
+        Text(value, color = TextPrimary, fontSize = 15.sp, fontWeight = FontWeight.ExtraBold)
     }
 }
 
@@ -11363,19 +12033,22 @@ private fun BacktestCard(content: @Composable ColumnScope.() -> Unit) {
 private fun BacktestInputRow(label: String, value: String, suffix: String, onValueChange: (String) -> Unit) {
     val isMoney = suffix == "원"
     val displayValue = if (isMoney) formatNumberInput(value) else value
-    Row(modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
-        Text(label, color = TextPrimary, fontSize = 16.sp, fontWeight = FontWeight.Bold, modifier = Modifier.width(92.dp))
-        OutlinedTextField(
-            value = displayValue,
-            onValueChange = { onValueChange(it.filter { ch -> ch.isDigit() }) },
-            singleLine = true,
-            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-            colors = appTextFieldColors(),
-            shape = RoundedCornerShape(18.dp),
-            modifier = Modifier.weight(1f)
-        )
-        Spacer(modifier = Modifier.width(8.dp))
-        Text(suffix, color = TextSecondary, fontSize = 14.sp)
+    BoxWithConstraints(modifier = Modifier.fillMaxWidth()) {
+        val compact = maxWidth < 420.dp
+        Row(modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+            Text(label, color = TextPrimary, fontSize = if (compact) 14.sp else 16.sp, fontWeight = FontWeight.Bold, modifier = Modifier.width(if (compact) 78.dp else 92.dp))
+            OutlinedTextField(
+                value = displayValue,
+                onValueChange = { onValueChange(it.filter { ch -> ch.isDigit() }) },
+                singleLine = true,
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                colors = appTextFieldColors(),
+                shape = RoundedCornerShape(18.dp),
+                modifier = Modifier.weight(1f)
+            )
+            Spacer(modifier = Modifier.width(8.dp))
+            Text(suffix, color = TextSecondary, fontSize = 14.sp)
+        }
     }
 }
 
@@ -11406,7 +12079,13 @@ private fun ToggleSwitch(checked: Boolean, onChange: (Boolean) -> Unit) {
 
 @Composable
 private fun BacktestChoiceRow(options: List<String>, selected: String, onSelect: (String) -> Unit) {
-    Row(modifier = Modifier.fillMaxWidth().padding(vertical = 6.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .horizontalScroll(rememberScrollState())
+            .padding(vertical = 6.dp),
+        horizontalArrangement = Arrangement.spacedBy(8.dp)
+    ) {
         options.forEach { option ->
             Box(
                 modifier = Modifier
@@ -11522,21 +12201,26 @@ private fun BacktestDisciplineCard(result: BacktestResultUi) {
 
 @Composable
 private fun BacktestMetricGrid(items: List<Pair<String, String>>) {
-    items.chunked(2).forEach { rowItems ->
-        Row(modifier = Modifier.fillMaxWidth()) {
-            rowItems.forEach { (label, value) ->
-                Column(
-                    modifier = Modifier
-                        .weight(1f)
-                        .background(SoftSurface)
-                        .padding(horizontal = 10.dp, vertical = 12.dp)
-                ) {
-                    Text(label, color = TextSecondary, fontSize = 12.sp, fontWeight = FontWeight.Bold)
-                    Spacer(modifier = Modifier.height(5.dp))
-                    Text(value, color = TextPrimary, fontSize = 15.sp, fontWeight = FontWeight.ExtraBold)
+    BoxWithConstraints(modifier = Modifier.fillMaxWidth()) {
+        val columns = if (maxWidth >= 720.dp) 4 else 2
+        Column(modifier = Modifier.fillMaxWidth()) {
+            items.chunked(columns).forEach { rowItems ->
+                Row(modifier = Modifier.fillMaxWidth()) {
+                    rowItems.forEach { (label, value) ->
+                        Column(
+                            modifier = Modifier
+                                .weight(1f)
+                                .background(SoftSurface)
+                                .padding(horizontal = 10.dp, vertical = 12.dp)
+                        ) {
+                            Text(label, color = TextSecondary, fontSize = 12.sp, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                            Spacer(modifier = Modifier.height(5.dp))
+                            Text(value, color = TextPrimary, fontSize = 15.sp, fontWeight = FontWeight.ExtraBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        }
+                    }
+                    repeat(columns - rowItems.size) { Spacer(modifier = Modifier.weight(1f)) }
                 }
             }
-            if (rowItems.size == 1) Spacer(modifier = Modifier.weight(1f))
         }
     }
 }
@@ -11588,6 +12272,7 @@ private fun BacktestGraphCard(
             modifier = Modifier
                 .fillMaxWidth()
                 .height(250.dp)
+                .appChartFrame()
                 .pointerInput(values, labels) {
                     detectTapGestures { offset ->
                         if (values.isNotEmpty()) {
@@ -11693,14 +12378,10 @@ private fun BacktestSelectedValue(label: String, value: String, modifier: Modifi
 @Composable
 private fun BacktestLegend(color: Color) {
     Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Center, verticalAlignment = Alignment.CenterVertically) {
-        Box(
-            modifier = Modifier
-                .width(58.dp)
-                .height(18.dp)
-                .background(color.copy(alpha = 0.12f))
-                .padding(2.dp)
-        ) {
-            Box(modifier = Modifier.fillMaxSize().background(Color.Transparent))
+        Canvas(modifier = Modifier.width(58.dp).height(18.dp)) {
+            val y = size.height / 2f
+            drawLine(color.copy(alpha = 0.18f), Offset(0f, y), Offset(size.width, y), strokeWidth = 10f, cap = StrokeCap.Round)
+            drawLine(color, Offset(0f, y), Offset(size.width, y), strokeWidth = ChartSeriesStrokeWidth, cap = StrokeCap.Round)
         }
         Spacer(modifier = Modifier.width(8.dp))
         Text("포트폴리오", color = TextSecondary, fontSize = 13.sp, fontWeight = FontWeight.Bold)
@@ -11717,6 +12398,7 @@ private fun BacktestAnnualReturnCard(annualReturns: List<Pair<Int, Double>>) {
             modifier = Modifier
                 .fillMaxWidth()
                 .height(180.dp)
+                .appChartFrame()
                 .pointerInput(annualReturns) {
                     detectTapGestures { offset ->
                         if (annualReturns.isNotEmpty()) {
@@ -11726,7 +12408,11 @@ private fun BacktestAnnualReturnCard(annualReturns: List<Pair<Int, Double>>) {
                     }
                 }
         ) {
-            SimpleBarChart(values = annualReturns.map { it.second }, modifier = Modifier.fillMaxSize())
+            SimpleBarChart(
+                values = annualReturns.map { it.second },
+                selectedIndex = selectedIndex,
+                modifier = Modifier.fillMaxSize()
+            )
         }
         selectedIndex?.let { index ->
             val item = annualReturns.getOrNull(index)
@@ -11795,12 +12481,12 @@ private fun DetailedBacktestLineChart(
         if (visibleValues.size < 2) return@Canvas
         val labelPaint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
             this.color = TextSecondary.toArgb()
-            textSize = if (detailedAxes) 19f else 23f
+            textSize = ChartAxisTextSize
             textAlign = android.graphics.Paint.Align.RIGHT
         }
         val xPaint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
             this.color = TextSecondary.toArgb()
-            textSize = if (detailedAxes) 16f else 22f
+            textSize = if (detailedAxes) 16f else ChartAxisTextSize
             textAlign = android.graphics.Paint.Align.RIGHT
         }
         val tooltipPaint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
@@ -11841,7 +12527,7 @@ private fun DetailedBacktestLineChart(
             val ratio = step / ySteps.toFloat()
             val y = top + chartHeight * ratio
             val value = maxValue - (range * ratio)
-            drawLine(LineColor, Offset(left, y), Offset(right, y), strokeWidth = 1.5f)
+            drawLine(chartGridColor(), Offset(left, y), Offset(right, y), strokeWidth = ChartGridStrokeWidth)
             drawContext.canvas.nativeCanvas.drawText(yAxisLabel(value), left - 10f, y + 8f, labelPaint)
         }
 
@@ -11850,7 +12536,7 @@ private fun DetailedBacktestLineChart(
             for (tick in 0 until xTickCount) {
                 val index = (window.first + ((window.last - window.first).toDouble() * tick) / (xTickCount - 1)).roundToInt().coerceIn(window.first, window.last)
                 val x = xOf(index)
-                drawLine(LineColor, Offset(x, top), Offset(x, bottom), strokeWidth = 1f)
+                drawLine(chartGridColor().copy(alpha = 0.72f), Offset(x, top), Offset(x, bottom), strokeWidth = ChartGridStrokeWidth)
                 val label = labels.getOrNull(index)?.replace("-", ".") ?: ""
                 drawContext.canvas.nativeCanvas.save()
                 drawContext.canvas.nativeCanvas.rotate(-42f, x, bottom + 48f)
@@ -11867,16 +12553,14 @@ private fun DetailedBacktestLineChart(
             close()
         }
         drawPath(fillPath, color.copy(alpha = if (chartType == BacktestChartType.DRAWDOWN) 0.22f else 0.16f))
-        for (i in 0 until points.lastIndex) {
-            drawLine(color, points[i], points[i + 1], strokeWidth = 4f, cap = StrokeCap.Round)
-        }
-        drawLine(Color(0xFFBFC6CE), Offset(left, bottom), Offset(right, bottom), strokeWidth = 2f)
-        drawLine(Color(0xFFBFC6CE), Offset(left, top), Offset(left, bottom), strokeWidth = 2f)
+        drawAppChartSeries(points, color)
+        drawLine(chartSelectionColor(), Offset(left, bottom), Offset(right, bottom), strokeWidth = ChartGridStrokeWidth)
+        drawLine(chartSelectionColor(), Offset(left, top), Offset(left, bottom), strokeWidth = ChartGridStrokeWidth)
 
         if (showInlineTooltip) selectedIndex?.coerceIn(0, values.lastIndex)?.takeIf { it in window }?.let { index ->
             val point = Offset(xOf(index), yOf(values[index]))
-            drawCircle(Color.White, radius = 9f, center = point)
-            drawCircle(color, radius = 7f, center = point)
+            drawAppChartSelection(point.x, top, bottom)
+            drawAppChartPoint(point, color)
             val text = "${labels.getOrNull(index).orEmpty()}  ${valueLabel(values[index])}"
             val rectWidth = minOf(size.width - 28f, tooltipPaint.measureText(text) + 34f)
             val rectHeight = 48f
@@ -11895,7 +12579,7 @@ private fun DetailedBacktestLineChart(
 
 @Composable
 private fun SimpleLineChart(values: List<Double>, color: Color, modifier: Modifier = Modifier) {
-    Canvas(modifier = modifier) {
+    Canvas(modifier = modifier.appChartFrame()) {
         if (values.size < 2) return@Canvas
         val minValue = values.minOrNull() ?: 0.0
         val maxValue = values.maxOrNull() ?: 1.0
@@ -11906,49 +12590,58 @@ private fun SimpleLineChart(values: List<Double>, color: Color, modifier: Modifi
             val y = size.height - ((value - minValue) / range * size.height).toFloat()
             Offset(x, y.coerceIn(0f, size.height))
         }
-        for (i in 0 until points.lastIndex) {
-            drawLine(color = color, start = points[i], end = points[i + 1], strokeWidth = 5f, cap = StrokeCap.Round)
-        }
+        drawAppChartGrid(0f, size.width, 0f, size.height, horizontalLines = 4)
+        drawAppChartSeries(points, color)
     }
 }
 
 @Composable
-private fun SimpleBarChart(values: List<Double>, modifier: Modifier = Modifier) {
+private fun SimpleBarChart(values: List<Double>, selectedIndex: Int? = null, modifier: Modifier = Modifier) {
     Canvas(modifier = modifier) {
         if (values.isEmpty()) return@Canvas
         val maxAbs = values.maxOf { kotlin.math.abs(it) }.takeIf { it > 0.0 } ?: 1.0
         val barWidth = size.width / values.size * 0.58f
         val centerY = size.height * 0.52f
+        drawAppChartGrid(0f, size.width, size.height * 0.08f, size.height * 0.96f, horizontalLines = 4)
+        selectedIndex?.coerceIn(values.indices)?.let { index ->
+            val x = (index + 0.5f) * (size.width / values.size)
+            drawAppChartSelection(x, size.height * 0.08f, size.height * 0.96f)
+        }
         values.forEachIndexed { index, value ->
             val x = index * (size.width / values.size) + barWidth * 0.35f
             val height = (kotlin.math.abs(value) / maxAbs * size.height * 0.44f).toFloat()
             val top = if (value >= 0) centerY - height else centerY
+            val baseColor = if (value >= 0) PositiveRed else NegativeBlue
             drawRoundRect(
-                color = if (value >= 0) PositiveRed else NegativeBlue,
+                color = if (selectedIndex == null || selectedIndex == index) baseColor else baseColor.copy(alpha = 0.38f),
                 topLeft = Offset(x, top),
                 size = androidx.compose.ui.geometry.Size(barWidth, height.coerceAtLeast(3f))
             )
         }
-        drawLine(color = LineColor, start = Offset(0f, centerY), end = Offset(size.width, centerY), strokeWidth = 2f)
+        drawLine(color = chartSelectionColor(), start = Offset(0f, centerY), end = Offset(size.width, centerY), strokeWidth = ChartGridStrokeWidth)
     }
 }
 
 @Composable
 private fun BacktestReportTable(rows: List<BacktestReportRow>) {
     BacktestCard {
-        Row(modifier = Modifier.fillMaxWidth()) {
-            listOf("연도", "수익률", "손익", "MDD", "자산").forEach {
-                Text(it, color = TextSecondary, fontSize = 12.sp, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f), textAlign = TextAlign.Center)
-            }
-        }
-        Spacer(modifier = Modifier.height(10.dp))
-        rows.forEach { row ->
-            Row(modifier = Modifier.fillMaxWidth().padding(vertical = 7.dp), verticalAlignment = Alignment.CenterVertically) {
-                Text("${row.year}", color = TextPrimary, fontSize = 12.sp, modifier = Modifier.weight(1f), textAlign = TextAlign.Center)
-                Text(formatPercent(row.finalReturn / 100.0), color = if (row.finalReturn < 0) NegativeBlue else PositiveRed, fontSize = 12.sp, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f), textAlign = TextAlign.Center)
-                Text(formatCompactWon(row.profit), color = if (row.profit < 0) NegativeBlue else PositiveRed, fontSize = 12.sp, modifier = Modifier.weight(1f), textAlign = TextAlign.Center)
-                Text(formatPercent(row.maxDrawdown / 100.0), color = NegativeBlue, fontSize = 12.sp, modifier = Modifier.weight(1f), textAlign = TextAlign.Center)
-                Text(formatCompactWon(row.finalAsset), color = TextPrimary, fontSize = 12.sp, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f), textAlign = TextAlign.Center)
+        Column(modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState())) {
+            Column(modifier = Modifier.width(520.dp)) {
+                Row(modifier = Modifier.fillMaxWidth()) {
+                    listOf("연도", "수익률", "손익", "MDD", "자산").forEach {
+                        Text(it, color = TextSecondary, fontSize = 12.sp, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f), textAlign = TextAlign.Center)
+                    }
+                }
+                Spacer(modifier = Modifier.height(10.dp))
+                rows.forEach { row ->
+                    Row(modifier = Modifier.fillMaxWidth().padding(vertical = 7.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Text("${row.year}", color = TextPrimary, fontSize = 12.sp, modifier = Modifier.weight(1f), textAlign = TextAlign.Center)
+                        Text(formatPercent(row.finalReturn / 100.0), color = if (row.finalReturn < 0) NegativeBlue else PositiveRed, fontSize = 12.sp, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f), textAlign = TextAlign.Center)
+                        Text(formatCompactWon(row.profit), color = if (row.profit < 0) NegativeBlue else PositiveRed, fontSize = 12.sp, modifier = Modifier.weight(1f), textAlign = TextAlign.Center)
+                        Text(formatPercent(row.maxDrawdown / 100.0), color = NegativeBlue, fontSize = 12.sp, modifier = Modifier.weight(1f), textAlign = TextAlign.Center)
+                        Text(formatCompactWon(row.finalAsset), color = TextPrimary, fontSize = 12.sp, fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f), textAlign = TextAlign.Center)
+                    }
+                }
             }
         }
     }
@@ -12589,6 +13282,9 @@ private fun estimatedAnnualDividendYield(ticker: String): Double {
 }
 
 private fun formatCompactWon(value: Long): String {
+    if (DisplayCurrency == CurrencyMode.USD) {
+        return CurrencyDisplayFormatter.formatCompact(value, DisplayUsdKrw, true)
+    }
     val abs = kotlin.math.abs(value)
     return when {
         abs >= 100_000_000L -> "${value / 100_000_000}억"
@@ -12599,6 +13295,9 @@ private fun formatCompactWon(value: Long): String {
 
 private fun formatAxisWon(value: Double): String {
     val rounded = value.roundToLong()
+    if (DisplayCurrency == CurrencyMode.USD) {
+        return CurrencyDisplayFormatter.formatCompact(rounded, DisplayUsdKrw, true)
+    }
     val abs = kotlin.math.abs(rounded)
     return when {
         abs >= 100_000_000L -> "${NumberFormat.getNumberInstance(Locale.KOREA).format(rounded / 100_000_000)}억원"
@@ -12849,14 +13548,27 @@ private fun ScreenColumn(
     scrollState: androidx.compose.foundation.ScrollState = rememberScrollState(),
     content: @Composable ColumnScope.() -> Unit
 ) {
-    Column(
+    BoxWithConstraints(
         modifier = modifier
             .fillMaxSize()
             .background(AppBackground)
-            .verticalScroll(scrollState)
-            .padding(start = 24.dp, top = topPadding.dp, end = 24.dp, bottom = 70.dp),
-        content = content
-    )
+    ) {
+        val horizontalPadding = responsiveHorizontalPadding(maxWidth)
+        Column(
+            modifier = Modifier
+                .align(Alignment.TopCenter)
+                .widthIn(max = ResponsiveContentMaxWidth)
+                .fillMaxSize()
+                .verticalScroll(scrollState)
+                .padding(
+                    start = horizontalPadding,
+                    top = topPadding.dp,
+                    end = horizontalPadding,
+                    bottom = 70.dp
+                ),
+            content = content
+        )
+    }
 }
 
 @Composable
@@ -12866,24 +13578,72 @@ private fun MainTabScreenColumn(
     content: @Composable ColumnScope.() -> Unit
 ) {
     val statusTop = WindowInsets.statusBars.asPaddingValues().calculateTopPadding()
-    Column(
+    BoxWithConstraints(
         modifier = modifier
             .fillMaxSize()
             .background(AppBackground)
-            .verticalScroll(scrollState)
-            .padding(start = 24.dp, top = statusTop + 12.dp, end = 24.dp, bottom = 70.dp),
-        content = content
-    )
+    ) {
+        val horizontalPadding = responsiveHorizontalPadding(maxWidth)
+        Column(
+            modifier = Modifier
+                .align(Alignment.TopCenter)
+                .widthIn(max = ResponsiveContentMaxWidth)
+                .fillMaxSize()
+                .verticalScroll(scrollState)
+                .padding(
+                    start = horizontalPadding,
+                    top = statusTop + 12.dp,
+                    end = horizontalPadding,
+                    bottom = 70.dp
+                ),
+            content = content
+        )
+    }
+}
+
+@Composable
+private fun ResponsiveSheetColumn(
+    verticalPadding: Dp,
+    content: @Composable ColumnScope.() -> Unit
+) {
+    BoxWithConstraints(modifier = Modifier.fillMaxWidth()) {
+        val horizontalPadding = responsiveHorizontalPadding(maxWidth)
+        Column(
+            modifier = Modifier
+                .align(Alignment.TopCenter)
+                .widthIn(max = ResponsiveContentMaxWidth)
+                .fillMaxWidth()
+                .padding(horizontal = horizontalPadding, vertical = verticalPadding),
+            content = content
+        )
+    }
 }
 
 @Composable
 private fun PlainTopBar(title: String, onBack: () -> Unit, rightText: String, onRightClick: () -> Unit) {
-    Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-        Text("‹", color = TextPrimary, fontSize = 38.sp, modifier = Modifier.clickable(onClick = onBack))
-        Spacer(modifier = Modifier.weight(1f))
-        Text(title, color = TextPrimary, fontSize = 22.sp, fontWeight = FontWeight.Bold)
-        Spacer(modifier = Modifier.weight(1f))
-        Text(rightText, color = TextPrimary, fontSize = 18.sp, modifier = Modifier.clickable(onClick = onRightClick))
+    Box(modifier = Modifier.fillMaxWidth().height(46.dp)) {
+        Text(
+            "‹",
+            color = TextPrimary,
+            fontSize = 38.sp,
+            modifier = Modifier.align(Alignment.CenterStart).clickable(onClick = onBack)
+        )
+        Text(
+            title,
+            color = TextPrimary,
+            fontSize = 22.sp,
+            fontWeight = FontWeight.Bold,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.align(Alignment.Center).padding(horizontal = 48.dp)
+        )
+        Text(
+            rightText,
+            color = TextPrimary,
+            fontSize = 18.sp,
+            maxLines = 1,
+            modifier = Modifier.align(Alignment.CenterEnd).clickable(onClick = onRightClick)
+        )
     }
     Spacer(modifier = Modifier.height(32.dp))
 }
@@ -12978,7 +13738,7 @@ private fun BigAssetAmount(
 ) {
     val amountText = formatWon(amount)
     val profitText = formatSignedWon(profit)
-    Text(amountText, color = portfolioAmountColor(amountText, TextPrimary), fontSize = 34.sp, lineHeight = 40.sp, fontWeight = FontWeight.ExtraBold)
+    Text(amountText, color = portfolioAmountColor(amountText, TextPrimary), fontSize = 34.sp, lineHeight = 40.sp, fontWeight = FontWeight.ExtraBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
     Spacer(modifier = Modifier.height(7.dp))
     Row(verticalAlignment = Alignment.CenterVertically) {
         Text(
@@ -13020,15 +13780,73 @@ private fun QuickMetric(label: String) {
 }
 
 @Composable
-private fun TabGlyph(text: String, selected: Boolean) {
-    Box(
-        modifier = Modifier
-            .size(24.dp)
-            .clip(CircleShape)
-            .background(if (selected) TextPrimary else SoftSurface),
-        contentAlignment = Alignment.Center
-    ) {
-        Text(text = text, color = if (selected) Color.White else TextSecondary, fontSize = 11.sp, fontWeight = FontWeight.Bold)
+private fun BottomNavigationIcon(icon: BottomTabIcon) {
+    val color = LocalContentColor.current
+    Canvas(modifier = Modifier.size(25.dp)) {
+        val unit = size.minDimension / 24f
+        val stroke = 2f * unit
+        val lineStyle = Stroke(
+            width = stroke,
+            cap = StrokeCap.Round,
+            join = StrokeJoin.Round
+        )
+        fun point(x: Float, y: Float) = Offset(x * unit, y * unit)
+
+        when (icon) {
+            BottomTabIcon.Home -> {
+                val house = Path().apply {
+                    moveTo(3.5f * unit, 10.3f * unit)
+                    lineTo(12f * unit, 3.5f * unit)
+                    lineTo(20.5f * unit, 10.3f * unit)
+                    moveTo(5.3f * unit, 9.3f * unit)
+                    lineTo(5.3f * unit, 20f * unit)
+                    lineTo(18.7f * unit, 20f * unit)
+                    lineTo(18.7f * unit, 9.3f * unit)
+                }
+                drawPath(house, color = color, style = lineStyle)
+                drawLine(color, point(8f, 16.7f), point(11f, 14.2f), stroke, StrokeCap.Round)
+                drawLine(color, point(11f, 14.2f), point(13.5f, 15f), stroke, StrokeCap.Round)
+                drawLine(color, point(13.5f, 15f), point(16.4f, 11.8f), stroke, StrokeCap.Round)
+                listOf(point(8f, 16.7f), point(11f, 14.2f), point(13.5f, 15f), point(16.4f, 11.8f)).forEach {
+                    drawCircle(color = color, radius = 1.15f * unit, center = it)
+                }
+            }
+
+            BottomTabIcon.Simulator -> {
+                val handles = listOf(8f to 6f, 15.5f to 12f, 10f to 18f)
+                handles.forEach { (handleX, y) ->
+                    drawLine(color, point(3f, y), point(handleX - 2.2f, y), stroke, StrokeCap.Round)
+                    drawLine(color, point(handleX + 2.2f, y), point(21f, y), stroke, StrokeCap.Round)
+                    drawCircle(
+                        color = color,
+                        radius = 2.2f * unit,
+                        center = point(handleX, y),
+                        style = Stroke(width = stroke)
+                    )
+                }
+            }
+
+            BottomTabIcon.Report -> {
+                val document = Path().apply {
+                    moveTo(6f * unit, 2.8f * unit)
+                    lineTo(14.5f * unit, 2.8f * unit)
+                    lineTo(19f * unit, 7.3f * unit)
+                    lineTo(19f * unit, 21.2f * unit)
+                    lineTo(6f * unit, 21.2f * unit)
+                    close()
+                    moveTo(14.5f * unit, 2.8f * unit)
+                    lineTo(14.5f * unit, 7.3f * unit)
+                    lineTo(19f * unit, 7.3f * unit)
+                }
+                drawPath(document, color = color, style = lineStyle)
+                drawLine(color, point(9f, 17f), point(11.3f, 14.7f), stroke, StrokeCap.Round)
+                drawLine(color, point(11.3f, 14.7f), point(13.5f, 15.3f), stroke, StrokeCap.Round)
+                drawLine(color, point(13.5f, 15.3f), point(16.4f, 11.9f), stroke, StrokeCap.Round)
+                listOf(point(9f, 17f), point(11.3f, 14.7f), point(13.5f, 15.3f), point(16.4f, 11.9f)).forEach {
+                    drawCircle(color = color, radius = 1.15f * unit, center = it)
+                }
+            }
+        }
     }
 }
 
@@ -13041,11 +13859,15 @@ private fun LogoMark(
 ) {
     val painter = painterResource(id = R.drawable.snowball_mark)
     val progress = loadingProgress?.coerceIn(0f, 1f)
+    val markShape = RoundedCornerShape((markSize / 4).dp)
     if (progress == null) {
         Image(
             painter = painter,
             contentDescription = null,
-            modifier = Modifier.size(markSize.dp).rotate(rotation),
+            modifier = Modifier
+                .size(markSize.dp)
+                .rotate(rotation)
+                .clip(markShape),
             alpha = alpha
         )
     } else {
@@ -13053,12 +13875,13 @@ private fun LogoMark(
             modifier = Modifier
                 .size(markSize.dp)
                 .rotate(rotation)
+                .clip(markShape)
         ) {
             Image(
                 painter = painter,
                 contentDescription = null,
                 modifier = Modifier.matchParentSize(),
-                colorFilter = ColorFilter.tint(Color(0xFFDDE2E8))
+                alpha = alpha * 0.24f
             )
             Box(
                 modifier = Modifier
@@ -13073,7 +13896,7 @@ private fun LogoMark(
                     modifier = Modifier
                         .size(markSize.dp)
                         .align(Alignment.BottomCenter),
-                    colorFilter = ColorFilter.tint(Color(0xFF8E98A3))
+                    alpha = alpha
                 )
             }
         }
@@ -13089,17 +13912,13 @@ private fun SectionTitle(title: String) {
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun GoalProgressCard(
-    accounts: List<AccountUi>,
+    chartPoints: List<GoalChartPoint>,
     totalAmount: Long,
     principal: Long,
     plan: GoalPlan,
     onClick: () -> Unit,
     onLongClick: () -> Unit
 ) {
-    val accountSnapshot = accounts.toList()
-    val chartPoints = remember(accountSnapshot, plan, totalAmount) {
-        goalChartPreviewPoints(accountSnapshot, plan, totalAmount)
-    }
     val currentReturnRate = if (principal <= 0L) 0.0 else (totalAmount - principal).toDouble() / principal
     val annualTargetRate = (plan.annualTargetReturn / 100.0).takeIf { it > 0.0 } ?: 1.0
     val annualProgress = (currentReturnRate / annualTargetRate).toFloat().coerceIn(0f, 1.5f)
@@ -13176,7 +13995,7 @@ private fun GoalProgressLine(label: String, percentText: String, progress: Float
             Text("$percentText%", color = TextPrimary, fontSize = 15.sp, fontWeight = FontWeight.ExtraBold)
         }
         Spacer(modifier = Modifier.height(7.dp))
-        Box(modifier = Modifier.fillMaxWidth().height(8.dp).clip(RoundedCornerShape(999.dp)).background(Color(0xFFE1E5EA))) {
+        Box(modifier = Modifier.fillMaxWidth().height(8.dp).clip(RoundedCornerShape(999.dp)).background(LineColor)) {
             Box(modifier = Modifier.fillMaxWidth(progress.coerceIn(0.02f, 1f)).height(8.dp).clip(RoundedCornerShape(999.dp)).background(BrandGreen))
         }
     }
@@ -13184,36 +14003,35 @@ private fun GoalProgressLine(label: String, percentText: String, progress: Float
 
 @Composable
 private fun GoalGrowthChart(points: List<GoalChartPoint>, plan: GoalPlan) {
-    val maxValue = maxOf(
-        plan.targetAmount.toDouble(),
-        points.maxOfOrNull { maxOf(it.target, it.actual ?: 0.0) } ?: 1.0,
-        1.0
-    )
+    val maxValue = goalChartMaxValue(points)
 
-    Canvas(modifier = Modifier.fillMaxWidth().height(116.dp)) {
+    Row(
+        modifier = Modifier.fillMaxWidth().padding(bottom = 6.dp),
+        horizontalArrangement = Arrangement.Center
+    ) {
+        AppChartLegendItem("실제", ChartActualColor)
+        Spacer(modifier = Modifier.width(16.dp))
+        AppChartLegendItem("계획", TextSecondary.copy(alpha = 0.72f))
+    }
+    Canvas(modifier = Modifier.fillMaxWidth().height(116.dp).appChartFrame()) {
         val left = 8f
         val right = size.width - 8f
         val top = 12f
         val bottom = size.height - 22f
 
-        drawLine(Color(0xFFDDE2E8), Offset(left, bottom), Offset(right, bottom), strokeWidth = 2f)
-        drawLine(Color(0xFFDDE2E8), Offset(left, top), Offset(left, bottom), strokeWidth = 2f)
+        drawAppChartGrid(left, right, top, bottom, horizontalLines = 4)
 
         fun xOf(index: Int): Float = left + ((right - left) * (index.toFloat() / (points.lastIndex).coerceAtLeast(1)))
         fun yOf(value: Double): Float = bottom - ((bottom - top) * (value / maxValue).toFloat()).coerceIn(0f, bottom - top)
 
         val targetPoints = points.mapIndexed { index, point -> Offset(xOf(index), yOf(point.target)) }
-        for (index in 0 until targetPoints.lastIndex) {
-            drawLine(Color(0xFF555B64), targetPoints[index], targetPoints[index + 1], strokeWidth = 4f, cap = StrokeCap.Round)
-        }
+        drawAppChartSeries(targetPoints, TextSecondary.copy(alpha = 0.72f))
 
         val actualPoints = points.mapIndexedNotNull { index, point ->
             point.actual?.takeIf { it > 0.0 }?.let { Offset(xOf(index), yOf(it)) }
         }
-        for (index in 0 until actualPoints.lastIndex) {
-            drawLine(NegativeBlue, actualPoints[index], actualPoints[index + 1], strokeWidth = 4f, cap = StrokeCap.Round)
-        }
-        actualPoints.lastOrNull()?.let { drawCircle(NegativeBlue, radius = 7f, center = it) }
+        drawAppChartSeries(actualPoints, ChartActualColor)
+        actualPoints.lastOrNull()?.let { drawAppChartPoint(it, ChartActualColor) }
     }
     Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
         Text("0년", color = TextSecondary, fontSize = 11.sp)
@@ -13223,28 +14041,9 @@ private fun GoalGrowthChart(points: List<GoalChartPoint>, plan: GoalPlan) {
 
 @Composable
 private fun GoalProgressDetailDialog(
-    accounts: List<AccountUi>,
-    plan: GoalPlan,
-    fallbackTotal: Long,
+    points: List<GoalChartPoint>,
     onDismiss: () -> Unit
 ) {
-    val context = LocalContext.current
-    val frozenAccounts = remember { accounts.toList() }
-    val frozenPlan = remember { plan }
-    val frozenFallbackTotal = remember { fallbackTotal }
-    val points = remember {
-        loadGoalChartSnapshot(
-            context = context.applicationContext,
-            accounts = frozenAccounts,
-            plan = frozenPlan,
-            fallbackTotal = frozenFallbackTotal
-        )?.points ?: goalChartPoints(
-            context = context.applicationContext,
-            accounts = frozenAccounts,
-            plan = frozenPlan,
-            fallbackTotal = frozenFallbackTotal
-        )
-    }
     var selectedIndex by remember(points) { mutableStateOf(points.indexOfLast { it.actual != null }.coerceAtLeast(0)) }
     val selected = points.getOrNull(selectedIndex)
     AlertDialog(
@@ -13261,6 +14060,12 @@ private fun GoalProgressDetailDialog(
                     lineHeight = 19.sp
                 )
                 Spacer(modifier = Modifier.height(14.dp))
+                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Center) {
+                    AppChartLegendItem("실제", ChartActualColor)
+                    Spacer(modifier = Modifier.width(16.dp))
+                    AppChartLegendItem("계획", TextSecondary.copy(alpha = 0.72f))
+                }
+                Spacer(modifier = Modifier.height(8.dp))
                 GoalDetailChart(
                     points = points,
                     selectedIndex = selectedIndex,
@@ -13289,11 +14094,12 @@ private fun GoalProgressDetailDialog(
 
 @Composable
 private fun GoalDetailChart(points: List<GoalChartPoint>, selectedIndex: Int, onSelect: (Int) -> Unit) {
-    val maxValue = maxOf(points.maxOfOrNull { maxOf(it.target, it.actual ?: 0.0) } ?: 1.0, 1.0)
+    val maxValue = goalChartMaxValue(points)
     Canvas(
         modifier = Modifier
             .fillMaxWidth()
             .height(240.dp)
+            .appChartFrame()
             .pointerInput(points) {
                 detectTapGestures { offset ->
                     if (points.isNotEmpty()) {
@@ -13311,7 +14117,7 @@ private fun GoalDetailChart(points: List<GoalChartPoint>, selectedIndex: Int, on
         val height = (bottom - top).coerceAtLeast(1f)
         val labelPaint = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
             color = TextSecondary.toArgb()
-            textSize = 22f
+            textSize = ChartAxisTextSize
             textAlign = android.graphics.Paint.Align.RIGHT
         }
         fun xOf(index: Int): Float = left + width * (index.toFloat() / points.lastIndex.coerceAtLeast(1))
@@ -13319,31 +14125,28 @@ private fun GoalDetailChart(points: List<GoalChartPoint>, selectedIndex: Int, on
         repeat(4) { step ->
             val ratio = step / 3f
             val y = top + height * ratio
-            drawLine(LineColor, Offset(left, y), Offset(right, y), strokeWidth = 1.3f)
+            drawLine(chartGridColor(), Offset(left, y), Offset(right, y), strokeWidth = ChartGridStrokeWidth)
             val value = maxValue * (1f - ratio)
             drawContext.canvas.nativeCanvas.drawText(formatAxisWon(value.toDouble()), left - 8f, y + 7f, labelPaint)
         }
         val target = points.mapIndexed { index, point -> Offset(xOf(index), yOf(point.target)) }
-        for (index in 0 until target.lastIndex) {
-            drawLine(Color(0xFF555B64), target[index], target[index + 1], strokeWidth = 4f, cap = StrokeCap.Round)
-        }
+        drawAppChartSeries(target, TextSecondary.copy(alpha = 0.72f))
         val actual = points.mapIndexedNotNull { index, point -> point.actual?.takeIf { it > 0.0 }?.let { Offset(xOf(index), yOf(it)) } }
-        for (index in 0 until actual.lastIndex) {
-            drawLine(NegativeBlue, actual[index], actual[index + 1], strokeWidth = 4f, cap = StrokeCap.Round)
-        }
+        drawAppChartSeries(actual, ChartActualColor)
         val selectedPoint = points.getOrNull(selectedIndex)
         selectedPoint?.let {
             val x = xOf(selectedIndex)
-            drawLine(Color(0x993C4652), Offset(x, top), Offset(x, bottom), strokeWidth = 2f)
+            drawAppChartSelection(x, top, bottom)
             it.actual?.takeIf { actualValue -> actualValue > 0.0 }?.let { actualValue ->
-                drawCircle(Color.White, radius = 8f, center = Offset(x, yOf(actualValue)))
-                drawCircle(NegativeBlue, radius = 6f, center = Offset(x, yOf(actualValue)))
+                drawAppChartPoint(Offset(x, yOf(actualValue)), ChartActualColor)
             }
-            drawCircle(Color.White, radius = 8f, center = Offset(x, yOf(it.target)))
-            drawCircle(Color(0xFF555B64), radius = 6f, center = Offset(x, yOf(it.target)))
+            drawAppChartPoint(Offset(x, yOf(it.target)), TextSecondary.copy(alpha = 0.72f))
         }
     }
 }
+
+private fun goalChartMaxValue(points: List<GoalChartPoint>): Double =
+    maxOf(points.maxOfOrNull { maxOf(it.target, it.actual ?: 0.0) } ?: 1.0, 1.0)
 
 @Composable
 private fun GoalPlanDialog(initial: GoalPlan, onDismiss: () -> Unit, onSave: (GoalPlan) -> Unit) {
@@ -13502,30 +14305,60 @@ private fun InvestmentToolbar(
     onProfitModeChange: (String) -> Unit,
     onSortClick: () -> Unit
 ) {
-    Row(
-        modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.SpaceBetween,
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        SegmentedPill(
-            left = "시세",
-            right = "평가",
-            selectedLeft = investmentMode == InvestmentMode.QUOTE,
-            onLeftClick = { onInvestmentModeChange(InvestmentMode.QUOTE) },
-            onRightClick = { onInvestmentModeChange(InvestmentMode.VALUATION) }
-        )
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            if (investmentMode == InvestmentMode.VALUATION) {
-                SortPill(
-                    text = if (profitMode == ProfitMode.TOTAL) "총 수익" else "일간 수익",
-                    onClick = {
-                        onProfitModeChange(if (profitMode == ProfitMode.TOTAL) ProfitMode.DAY else ProfitMode.TOTAL)
-                    }
+    BoxWithConstraints(modifier = Modifier.fillMaxWidth()) {
+        val compact = maxWidth < 430.dp
+        if (compact) {
+            Column(modifier = Modifier.fillMaxWidth()) {
+                SegmentedPill(
+                    left = "시세",
+                    right = "평가",
+                    selectedLeft = investmentMode == InvestmentMode.QUOTE,
+                    onLeftClick = { onInvestmentModeChange(InvestmentMode.QUOTE) },
+                    onRightClick = { onInvestmentModeChange(InvestmentMode.VALUATION) }
                 )
-                Spacer(modifier = Modifier.width(8.dp))
+                Spacer(modifier = Modifier.height(10.dp))
+                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.End) {
+                    InvestmentToolbarActions(investmentMode, profitMode, onProfitModeChange, onSortClick, sortLabel)
+                }
             }
-            SortPill(sortLabel, onClick = onSortClick)
+        } else {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                SegmentedPill(
+                    left = "시세",
+                    right = "평가",
+                    selectedLeft = investmentMode == InvestmentMode.QUOTE,
+                    onLeftClick = { onInvestmentModeChange(InvestmentMode.QUOTE) },
+                    onRightClick = { onInvestmentModeChange(InvestmentMode.VALUATION) }
+                )
+                InvestmentToolbarActions(investmentMode, profitMode, onProfitModeChange, onSortClick, sortLabel)
+            }
         }
+    }
+}
+
+@Composable
+private fun InvestmentToolbarActions(
+    investmentMode: String,
+    profitMode: String,
+    onProfitModeChange: (String) -> Unit,
+    onSortClick: () -> Unit,
+    sortLabel: String
+) {
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        if (investmentMode == InvestmentMode.VALUATION) {
+            SortPill(
+                text = if (profitMode == ProfitMode.TOTAL) "총 수익" else "일간 수익",
+                onClick = {
+                    onProfitModeChange(if (profitMode == ProfitMode.TOTAL) ProfitMode.DAY else ProfitMode.TOTAL)
+                }
+            )
+            Spacer(modifier = Modifier.width(8.dp))
+        }
+        SortPill(sortLabel, onClick = onSortClick)
     }
 }
 
@@ -13549,39 +14382,53 @@ private fun InvestmentHoldingRow(
     val profitText = formatSignedWon(activeProfit)
     val currentPriceText = formatAssetPrice(holding.currentPrice, holding.ticker)
 
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .combinedClickable(onClick = onClick, onLongClick = onLongClick)
-            .padding(vertical = 14.dp),
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        AssetBadge(holding.ticker.take(1), holding.color)
-        Spacer(modifier = Modifier.width(14.dp))
-        Column(modifier = Modifier.weight(1f)) {
-            Text(assetDisplayName(holding), color = TextPrimary, fontSize = 18.sp, fontWeight = FontWeight.ExtraBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
-            Text(
-                text = if (investmentMode == InvestmentMode.QUOTE) formatAssetPrice(holding.averagePrice, holding.ticker) else "${formatQuantity(holding.quantity)}주",
-                color = TextSecondary,
-                fontSize = 14.sp
-            )
-        }
-        if (investmentMode == InvestmentMode.QUOTE) {
-            MiniPriceChart(negative = dayRate < 0)
-            Spacer(modifier = Modifier.width(20.dp))
-            Column(horizontalAlignment = Alignment.End) {
-                Text(currentPriceText, color = portfolioAmountColor(currentPriceText, TextPrimary), fontSize = 16.sp, fontWeight = FontWeight.ExtraBold)
+    BoxWithConstraints(modifier = Modifier.fillMaxWidth()) {
+        val compact = maxWidth < 430.dp
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .combinedClickable(onClick = onClick, onLongClick = onLongClick)
+                .padding(vertical = 14.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            AssetBadge(holding.ticker.take(1), holding.color, size = if (compact) 34 else 38)
+            Spacer(modifier = Modifier.width(if (compact) 10.dp else 14.dp))
+            Column(modifier = Modifier.weight(1f)) {
                 Text(
-                    "${formatPercent(dayRate)}",
-                    color = if (dayRate < 0) NegativeBlue else PositiveRed,
-                    fontSize = 13.sp,
-                    fontWeight = FontWeight.Bold
+                    assetDisplayName(holding),
+                    color = TextPrimary,
+                    fontSize = if (compact) 16.sp else 18.sp,
+                    fontWeight = FontWeight.ExtraBold,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+                Text(
+                    text = if (investmentMode == InvestmentMode.QUOTE) formatAssetPrice(holding.averagePrice, holding.ticker) else "${formatQuantity(holding.quantity)}주",
+                    color = TextSecondary,
+                    fontSize = if (compact) 12.sp else 14.sp
                 )
             }
-        } else {
-            Column(horizontalAlignment = Alignment.End) {
-                Text(amountText, color = portfolioAmountColor(amountText, TextPrimary), fontSize = 16.sp, fontWeight = FontWeight.ExtraBold)
-                Text("$profitText (${formatPercent(activeRate)})", color = portfolioAmountColor(profitText, activeColor), fontSize = 13.sp, fontWeight = FontWeight.Bold)
+            if (investmentMode == InvestmentMode.QUOTE) {
+                if (!compact) {
+                    MiniPriceChart(negative = dayRate < 0)
+                    Spacer(modifier = Modifier.width(20.dp))
+                } else {
+                    Spacer(modifier = Modifier.width(8.dp))
+                }
+                Column(horizontalAlignment = Alignment.End) {
+                    Text(currentPriceText, color = portfolioAmountColor(currentPriceText, TextPrimary), fontSize = if (compact) 14.sp else 16.sp, fontWeight = FontWeight.ExtraBold, maxLines = 1)
+                    Text(
+                        "${formatPercent(dayRate)}",
+                        color = if (dayRate < 0) NegativeBlue else PositiveRed,
+                        fontSize = 13.sp,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+            } else {
+                Column(horizontalAlignment = Alignment.End) {
+                    Text(amountText, color = portfolioAmountColor(amountText, TextPrimary), fontSize = if (compact) 14.sp else 16.sp, fontWeight = FontWeight.ExtraBold, maxLines = 1)
+                    Text("$profitText (${formatPercent(activeRate)})", color = portfolioAmountColor(profitText, activeColor), fontSize = if (compact) 12.sp else 13.sp, fontWeight = FontWeight.Bold, maxLines = 1)
+                }
             }
         }
     }
@@ -13589,21 +14436,21 @@ private fun InvestmentHoldingRow(
 
 @Composable
 private fun MiniPriceChart(negative: Boolean) {
-    Canvas(modifier = Modifier.width(82.dp).height(42.dp)) {
+    Canvas(modifier = Modifier.width(82.dp).height(42.dp).appChartFrame()) {
         val color = if (negative) NegativeBlue else PositiveRed
         val dash = PathEffect.dashPathEffect(floatArrayOf(5f, 7f), 0f)
         drawLine(
-            color = MutedText.copy(alpha = 0.55f),
+            color = chartGridColor(),
             start = Offset(0f, size.height * 0.22f),
             end = Offset(size.width, size.height * 0.22f),
-            strokeWidth = 2.4f,
+            strokeWidth = ChartGridStrokeWidth,
             pathEffect = dash
         )
         drawLine(
-            color = MutedText.copy(alpha = 0.45f),
+            color = chartGridColor(),
             start = Offset(0f, size.height * 0.78f),
             end = Offset(size.width, size.height * 0.78f),
-            strokeWidth = 2.2f,
+            strokeWidth = ChartGridStrokeWidth,
             pathEffect = dash
         )
         val points = if (negative) {
@@ -13614,7 +14461,7 @@ private fun MiniPriceChart(negative: Boolean) {
         for (index in 0 until points.lastIndex) {
             val start = Offset(size.width * index / points.lastIndex, size.height * points[index])
             val end = Offset(size.width * (index + 1) / points.lastIndex, size.height * points[index + 1])
-            drawLine(color = color, start = start, end = end, strokeWidth = 5.5f, cap = StrokeCap.Round)
+            drawLine(color = color, start = start, end = end, strokeWidth = ChartSeriesStrokeWidth, cap = StrokeCap.Round)
         }
     }
 }
@@ -13775,7 +14622,7 @@ private fun SortSheet(
 ) {
     var localDescending by remember { mutableStateOf(descending) }
 
-    Column(modifier = Modifier.padding(horizontal = 24.dp, vertical = 18.dp)) {
+    ResponsiveSheetColumn(verticalPadding = 18.dp) {
         Box(modifier = Modifier.align(Alignment.CenterHorizontally).width(48.dp).height(5.dp).clip(RoundedCornerShape(999.dp)).background(LineColor))
         Spacer(modifier = Modifier.height(24.dp))
         Text("정렬", color = TextPrimary, fontSize = 28.sp, fontWeight = FontWeight.ExtraBold)
@@ -13920,8 +14767,9 @@ private fun ScenarioRow(title: String, loss: String, recovery: String) {
 @Composable
 private fun MetricRow(label: String, value: String) {
     Row(modifier = Modifier.fillMaxWidth().padding(vertical = 11.dp), verticalAlignment = Alignment.CenterVertically) {
-        Text(label, color = TextSecondary, fontSize = 16.sp, modifier = Modifier.weight(1f))
-        Text(value, color = portfolioAmountColor(value, TextPrimary), fontSize = 18.sp, fontWeight = FontWeight.ExtraBold, textAlign = TextAlign.End)
+        Text(label, color = TextSecondary, fontSize = 16.sp, maxLines = 2, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(0.9f))
+        Spacer(modifier = Modifier.width(10.dp))
+        Text(value, color = portfolioAmountColor(value, TextPrimary), fontSize = 18.sp, fontWeight = FontWeight.ExtraBold, textAlign = TextAlign.End, maxLines = 2, overflow = TextOverflow.Ellipsis, modifier = Modifier.weight(1.1f))
     }
 }
 
@@ -15535,7 +16383,7 @@ private suspend fun refreshGoalChartCacheOnAppLaunch(
     accounts: List<AccountUi>,
     plan: GoalPlan,
     fallbackTotal: Long
-) = withContext(Dispatchers.IO) {
+): List<GoalChartPoint> = withContext(Dispatchers.IO) {
     val symbols = accounts
         .flatMap { it.holdings }
         .map { it.ticker.trim().uppercase(Locale.US) }
@@ -15560,11 +16408,13 @@ private suspend fun refreshGoalChartCacheOnAppLaunch(
             }
         }
     }
+    val points = goalChartPoints(context, accounts, plan, fallbackTotal)
     saveGoalChartSnapshot(
         context = context,
         signature = goalChartSnapshotSignature(accounts, plan, fallbackTotal),
-        points = goalChartPoints(context, accounts, plan, fallbackTotal)
+        points = points
     )
+    points
 }
 
 private fun goalChartSnapshotSignature(
@@ -15648,38 +16498,6 @@ private fun saveGoalChartSnapshot(context: Context, signature: String, points: L
         .apply()
 }
 
-private fun goalChartPreviewPoints(
-    accounts: List<AccountUi>,
-    plan: GoalPlan,
-    fallbackTotal: Long
-): List<GoalChartPoint> {
-    val start = parseAppDate(plan.startDate) ?: LocalDate.now()
-    val end = start.plusYears(plan.years.toLong().coerceAtLeast(1L))
-    val today = LocalDate.now()
-    val months = monthEndsBetween(start, end)
-    if (months.isEmpty()) {
-        return listOf(
-            GoalChartPoint("시작", fallbackTotal.toDouble(), plannedValueAtYear(plan, 0.0)),
-            GoalChartPoint("${plan.years}년", null, plan.targetAmount.toDouble())
-        )
-    }
-    return months.map { monthEnd ->
-        val elapsedYears = ChronoUnit.DAYS.between(start, monthEnd).coerceAtLeast(0L) / 365.25
-        val actual = if (!monthEnd.isAfter(today)) {
-            portfolioCurrentValueAtDate(accounts, monthEnd, fallbackTotal)
-        } else {
-            null
-        }
-        GoalChartPoint(
-            label = "${monthEnd.year}.${monthEnd.monthValue.toString().padStart(2, '0')}",
-            actual = actual,
-            target = plannedValueAtYear(plan, elapsedYears)
-        )
-    }.let { points ->
-        if (points.size >= 2) points else points + GoalChartPoint("${plan.years}년", null, plan.targetAmount.toDouble())
-    }
-}
-
 private fun goalChartPoints(
     context: Context,
     accounts: List<AccountUi>,
@@ -15741,34 +16559,6 @@ private fun monthEndsBetween(start: LocalDate, end: LocalDate): List<LocalDate> 
         cursor = cursor.plusMonths(1)
     }
     return result.distinct()
-}
-
-private fun portfolioCurrentValueAtDate(
-    accounts: List<AccountUi>,
-    date: LocalDate,
-    fallbackTotal: Long
-): Double? {
-    val currentMonth = LocalDate.now().withDayOfMonth(1)
-    var value = 0.0
-    var usedAny = false
-    accounts.flatMap { it.holdings }.forEach { holding ->
-        val quantity = holdingQuantityAt(holding, date)
-        if (quantity <= 0.0) return@forEach
-        val price = holding.currentPrice.takeIf { it > 0.0 } ?: holding.averagePrice
-        if (price <= 0.0) return@forEach
-        val fx = if (isKoreanTicker(holding.ticker)) {
-            1.0
-        } else {
-            holding.exchangeRate.takeIf { it > 0.0 } ?: DefaultUsdKrw
-        }
-        value += quantity * price * fx
-        usedAny = true
-    }
-    return when {
-        usedAny && value > 0.0 -> value
-        !date.isBefore(currentMonth) && fallbackTotal > 0L -> fallbackTotal.toDouble()
-        else -> null
-    }
 }
 
 private fun portfolioValueAtDate(
@@ -16239,9 +17029,11 @@ private val defaultAccountIcon = accountLogoOptions.first { it.label == "Samsung
 
 private fun loadAppSettings(context: Context): AppSettings {
     val prefs = context.getSharedPreferences("long_run_portfolio", Context.MODE_PRIVATE)
+    val currency = prefs.getString("currency", CurrencyMode.KRW) ?: CurrencyMode.KRW
     return AppSettings(
         displayMode = prefs.getString("display_mode", DisplayMode.SYSTEM) ?: DisplayMode.SYSTEM,
-        currency = prefs.getString("currency", CurrencyMode.KRW) ?: CurrencyMode.KRW,
+        currency = currency,
+        simulatorCurrency = prefs.getString("simulator_currency", currency) ?: currency,
         apiProvider = prefs.getString("api_provider", ApiProvider.KIS) ?: ApiProvider.KIS,
         kisAppKey = prefs.getString("kis_app_key", "") ?: "",
         kisAppSecret = prefs.getString("kis_app_secret", "") ?: "",
@@ -16260,6 +17052,7 @@ private fun saveAppSettings(context: Context, settings: AppSettings) {
     val editor = prefs.edit()
         .putString("display_mode", settings.displayMode)
         .putString("currency", settings.currency)
+        .putString("simulator_currency", settings.simulatorCurrency)
         .putString("api_provider", settings.apiProvider)
         .putString("kis_app_key", settings.kisAppKey)
         .putString("kis_app_secret", settings.kisAppSecret)
@@ -16633,7 +17426,7 @@ private fun dividendChartUpdateSnapshotToJson(snapshot: DividendChartUpdateSnaps
     put("ticker", snapshot.ticker)
     put("targetMonthlyDividend", snapshot.targetMonthlyDividend)
     snapshot.latestPrice?.let { put("latestPrice", it) }
-    snapshot.dividendYieldPercent?.let { put("dividendYieldPercent", it) }
+    snapshot.averageDividendYieldPercent?.let { put("averageDividendYieldPercent", it) }
     put("dividendGrowthMetric", dividendMetricToJson(snapshot.dividendGrowthMetric))
     put("priceGrowthMetric", dividendMetricToJson(snapshot.priceGrowthMetric))
     put("pricePoints", dividendChartPointsToJson(snapshot.pricePoints))
@@ -16647,7 +17440,9 @@ private fun dividendChartUpdateSnapshotFromJson(item: JSONObject): DividendChart
         ticker = item.optString("ticker", "SCHD"),
         targetMonthlyDividend = item.optLong("targetMonthlyDividend", 0L),
         latestPrice = item.takeIf { it.has("latestPrice") }?.optDouble("latestPrice"),
-        dividendYieldPercent = item.takeIf { it.has("dividendYieldPercent") }?.optDouble("dividendYieldPercent"),
+        averageDividendYieldPercent = item
+            .takeIf { it.has("averageDividendYieldPercent") }
+            ?.optDouble("averageDividendYieldPercent"),
         dividendGrowthMetric = dividendMetricFromJson(item.optJSONObject("dividendGrowthMetric")),
         priceGrowthMetric = dividendMetricFromJson(item.optJSONObject("priceGrowthMetric")),
         pricePoints = dividendChartPointsFromJson(item.optJSONArray("pricePoints")),
@@ -17049,6 +17844,9 @@ private fun selfDividendProjectionRowToJson(row: SelfDividendProjectionRow): JSO
     put("monthlyTakeHome", row.monthlyTakeHome)
     put("annualTakeHome", row.annualTakeHome)
     put("assetBeforeWithdrawal", row.assetBeforeWithdrawal)
+    put("grossDividend", row.grossDividend)
+    put("dividendTax", row.dividendTax)
+    put("afterTaxDividend", row.afterTaxDividend)
     put("grossSale", row.grossSale)
     put("realizedGain", row.realizedGain)
     put("capitalGainsTax", row.capitalGainsTax)
@@ -17062,6 +17860,9 @@ private fun selfDividendProjectionRowFromJson(item: JSONObject): SelfDividendPro
     monthlyTakeHome = item.optLong("monthlyTakeHome"),
     annualTakeHome = item.optLong("annualTakeHome"),
     assetBeforeWithdrawal = item.optLong("assetBeforeWithdrawal"),
+    grossDividend = item.optLong("grossDividend"),
+    dividendTax = item.optLong("dividendTax"),
+    afterTaxDividend = item.optLong("afterTaxDividend"),
     grossSale = item.optLong("grossSale"),
     realizedGain = item.optLong("realizedGain"),
     capitalGainsTax = item.optLong("capitalGainsTax"),
