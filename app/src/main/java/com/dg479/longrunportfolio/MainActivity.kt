@@ -1,10 +1,12 @@
 ﻿package com.dg479.longrunportfolio
 
 import android.app.Activity
+import android.app.UiModeManager
 import android.content.Context
 import android.graphics.Color as AndroidColor
 import android.net.Uri
 import android.os.Bundle
+import android.os.Build
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
@@ -842,6 +844,13 @@ private enum class AppRoute {
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
+        val displayMode = loadAppSettings(this).displayMode
+        syncApplicationNightMode(this, displayMode)
+        setTheme(when (displayMode) {
+            DisplayMode.DARK -> R.style.Theme_LongRunPortfolio_Dark
+            DisplayMode.LIGHT -> R.style.Theme_LongRunPortfolio_Light
+            else -> R.style.Theme_LongRunPortfolio
+        })
         super.onCreate(savedInstanceState)
         if (BuildConfig.DEBUG && intent.getBooleanExtra(ResetProtectionForDevelopmentRunExtra, false)) {
             ProtectionStore.resetToNormalForDevelopmentRun(this)
@@ -1226,6 +1235,8 @@ private fun LongRunApp() {
             ScaledApp(scale = 0.84f) {
                 AccountDrawer(
                     accounts = accounts,
+                    currency = appSettings.currency,
+                    usdKrw = usdKrw,
                     onTotalClick = {
                         selectedTab = 0
                         route = AppRoute.Main
@@ -5134,7 +5145,7 @@ private fun SettingsScreen(
 
         Spacer(modifier = Modifier.height(46.dp))
         SettingsSectionTitle("서비스")
-        SettingsStaticRow(title = "버전정보", value = "2026.07.19")
+        SettingsStaticRow(title = "버전정보", value = BuildConfig.VERSION_NAME)
         SettingsValueRow(
             title = "전체 기능 안내",
             value = "보기",
@@ -6621,6 +6632,8 @@ private fun SmallRadio(selected: Boolean, selectedColor: Color) {
 @Composable
 private fun AccountDrawer(
     accounts: List<AccountUi>,
+    currency: String,
+    usdKrw: Double,
     onTotalClick: () -> Unit,
     onAccountClick: (AccountUi) -> Unit,
     onManageClick: () -> Unit,
@@ -6652,12 +6665,20 @@ private fun AccountDrawer(
                     Spacer(modifier = Modifier.width(16.dp))
                     Column {
                         Text("총 자산", color = TextSecondary, fontSize = 14.sp)
-                        Text(formatWon(accounts.sumOf { it.totalAmount }), color = portfolioAmountColor(formatWon(accounts.sumOf { it.totalAmount }), TextPrimary), fontSize = 23.sp, fontWeight = FontWeight.ExtraBold, lineHeight = 25.sp)
+                        val totalAmountText = formatWon(accounts.sumOf { it.totalAmount }, currency, usdKrw)
+                        Text(totalAmountText, color = portfolioAmountColor(totalAmountText, TextPrimary), fontSize = 23.sp, fontWeight = FontWeight.ExtraBold, lineHeight = 25.sp)
                     }
                 }
             }
             Spacer(modifier = Modifier.height(22.dp))
-            accounts.forEach { AccountRow(account = it, compactName = true, onClick = { onAccountClick(it) }) }
+            accounts.forEach { account ->
+                AccountRow(
+                    account = account,
+                    compactName = true,
+                    amountText = formatWon(account.totalAmount, currency, usdKrw),
+                    onClick = { onAccountClick(account) }
+                )
+            }
             Spacer(modifier = Modifier.height(26.dp))
             DrawerMenuRow("⚙", "계좌 관리", enabled = true, onClick = onManageClick)
             DrawerMenuRow("+", "계좌 추가", enabled = true, onClick = onAddAccountClick)
@@ -6666,10 +6687,14 @@ private fun AccountDrawer(
 }
 
 @Composable
-private fun AccountRow(account: AccountUi, compactName: Boolean = false, onClick: () -> Unit) {
+private fun AccountRow(
+    account: AccountUi,
+    compactName: Boolean = false,
+    amountText: String = formatWon(account.totalAmount),
+    onClick: () -> Unit
+) {
     val amountFontSize = if (compactName) 17.sp else 21.sp
     val amountLineHeight = if (compactName) 19.sp else 23.sp
-    val amountText = formatWon(account.totalAmount)
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -6932,6 +6957,12 @@ private fun HoldingDetailScreen(
     } else {
         holding.trades.sortedByDescending { it.id }
     }).filterNot { it.id in deletedTradeIds }
+    val saveTradeChanges = {
+        if (deletedTradeIds.isNotEmpty()) onDeleteTrades(deletedTradeIds.toList())
+        selectedTradeIds.clear()
+        deletedTradeIds.clear()
+        editMode = false
+    }
 
     BoxWithConstraints(modifier = Modifier.fillMaxSize().background(AppBackground)) {
         val horizontalPadding = responsiveHorizontalPadding(maxWidth)
@@ -6974,10 +7005,7 @@ private fun HoldingDetailScreen(
                     fontWeight = FontWeight.Bold,
                     modifier = Modifier.clickable {
                         if (editMode) {
-                            if (deletedTradeIds.isNotEmpty()) onDeleteTrades(deletedTradeIds.toList())
-                            selectedTradeIds.clear()
-                            deletedTradeIds.clear()
-                            editMode = false
+                            saveTradeChanges()
                         } else {
                             editMode = true
                         }
@@ -7030,10 +7058,12 @@ private fun HoldingDetailScreen(
                     color = TextPrimary,
                     fontSize = 18.sp,
                     fontWeight = FontWeight.Bold,
-                    modifier = Modifier.clickable {
-                        val editableIds = visibleTrades.filter { it.id != 0L }.map { it.id }
-                        if (selectedTradeIds.isEmpty()) selectedTradeIds.addAll(editableIds) else selectedTradeIds.clear()
-                    }
+                    modifier = Modifier
+                        .weight(1f)
+                        .clickable {
+                            val editableIds = visibleTrades.filter { it.id != 0L }.map { it.id }
+                            if (selectedTradeIds.isEmpty()) selectedTradeIds.addAll(editableIds) else selectedTradeIds.clear()
+                        }
                 )
                 Text(
                     "삭제",
@@ -7045,6 +7075,15 @@ private fun HoldingDetailScreen(
                         selectedTradeIds.clear()
                     }
                 )
+                Spacer(modifier = Modifier.width(18.dp))
+                Button(
+                    onClick = saveTradeChanges,
+                    shape = RoundedCornerShape(24.dp),
+                    colors = ButtonDefaults.buttonColors(containerColor = TextPrimary),
+                    modifier = Modifier.width(96.dp).height(48.dp)
+                ) {
+                    Text("저장", fontSize = 17.sp, fontWeight = FontWeight.Bold)
+                }
             }
         } else Row(
             modifier = Modifier
@@ -17043,6 +17082,18 @@ private fun loadAppSettings(context: Context): AppSettings {
     )
 }
 
+private fun syncApplicationNightMode(context: Context, displayMode: String) {
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+        val nightMode = when (displayMode) {
+            DisplayMode.DARK -> UiModeManager.MODE_NIGHT_YES
+            DisplayMode.LIGHT -> UiModeManager.MODE_NIGHT_NO
+            // AUTO clears the app override so Android follows the system configuration.
+            else -> UiModeManager.MODE_NIGHT_AUTO
+        }
+        context.getSystemService(UiModeManager::class.java)?.setApplicationNightMode(nightMode)
+    }
+}
+
 private fun saveAppSettings(context: Context, settings: AppSettings) {
     val prefs = context.getSharedPreferences("long_run_portfolio", Context.MODE_PRIVATE)
     val previousKey = prefs.getString("kis_app_key", "") ?: ""
@@ -17070,6 +17121,7 @@ private fun saveAppSettings(context: Context, settings: AppSettings) {
             .remove("kiwoom_access_token_expires_at")
     }
     editor.apply()
+    syncApplicationNightMode(context, settings.displayMode)
 }
 
 private fun loadAppState(context: Context): SavedAppState {
@@ -18159,8 +18211,12 @@ private fun applyCurrencyDisplay(currency: String, usdKrw: Double) {
     DisplayUsdKrw = usdKrw.coerceAtLeast(1.0)
 }
 
-private fun formatWon(value: Long): String {
-    val formatted = CurrencyDisplayFormatter.format(value, DisplayUsdKrw, DisplayCurrency == CurrencyMode.USD)
+private fun formatWon(
+    value: Long,
+    currency: String = DisplayCurrency,
+    usdKrw: Double = DisplayUsdKrw
+): String {
+    val formatted = CurrencyDisplayFormatter.format(value, usdKrw, currency == CurrencyMode.USD)
     return if (HidePortfolioAmounts) maskPortfolioAmount(formatted) else formatted
 }
 

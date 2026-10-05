@@ -33,8 +33,8 @@ android {
         applicationId = "com.dg479.longrunportfolio"
         minSdk = 26
         targetSdk = 36
-        versionCode = 1
-        versionName = "1.0"
+        versionCode = 2
+        versionName = "2026.10.05"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         buildConfigField("String", "KIS_APP_KEY", "\"${escapedBuildConfigValue("KIS_APP_KEY")}\"")
